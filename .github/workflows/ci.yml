@@ -1,0 +1,70 @@
+# OpenFDTD-X (GUI) CI — Linux/Windows で Qt6 ビルド + 自己テスト。
+# 処理ロジック (ofd/orcwa/obpm) はビルドに不要 (実行時に QProcess で起動する
+# 疎結合) のため、この CI はカーネル無しで完結する。
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ qt6-base-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
+        run: ./build/ofdx_selftest
+
+      - name: GUI smoke (offscreen screenshot)
+        run: |
+          export QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp/xdg
+          mkdir -p /tmp/xdg
+          timeout 60 ./build/openfdtd_x tests/data/dipole.ofd \
+            --domain optical --screenshot /tmp/gui-optical.png
+          timeout 60 ./build/openfdtd_x tests/data/dipole.ofd \
+            --domain acoustic --screenshot /tmp/gui-acoustic.png
+          test -s /tmp/gui-optical.png && test -s /tmp/gui-acoustic.png
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-screenshots
+          path: /tmp/gui-*.png
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.5.3"
+          arch: win64_msvc2019_64
+          cache: true
+
+      - name: Configure
+        run: cmake -B build
+
+      - name: Build (Release)
+        run: cmake --build build --config Release
+
+      - name: Self test
+        run: build/Release/ofdx_selftest.exe
+        shell: bash
