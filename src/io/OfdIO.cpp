@@ -529,7 +529,7 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
         }
         QJsonArray noise;
         for (double v : a.noiseLevels) noise.append(v);
-        root["acoustic"] = QJsonObject{
+        QJsonObject ac{
             {"rt60", a.rt60}, {"c80", a.c80}, {"d50", a.d50},
             {"sti", a.sti}, {"edt", a.edt},
             {"impulse_response", a.impulseResponse},
@@ -542,6 +542,22 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"volume", a.volume}, {"surface", a.surface},
             {"occupancy", a.occupancy}, {"rt_formula", a.rtFormula},
             {"absorption", budget}, {"noise_levels", noise} };
+        // 実測 RIR 分析 (RirAnalysisTab, 指示書 §15) — 追加キーのみ。
+        // 既存キーの改名・削除・型変更は後方互換のため禁止。
+        const OperaAcousticSettings &oa = p.operaAcoustic();
+        ac["opera_analysis"] = QJsonObject{
+            {"enabled", oa.enabled},
+            {"rir_file", oa.rirPath},
+            {"voice_file", oa.voicePath},
+            {"voice_type", oa.voiceType},
+            {"calibration_state", oa.calibrationState},
+            {"direct_sound_method", oa.directSoundMethod},
+            {"band_mode", oa.bandMode},
+            {"channel_mode", oa.channelMode},
+            {"analysis_settings", QJsonObject{
+                {"noise_correction", oa.noiseCorrection},
+                {"minimum_dynamic_range_db", oa.minimumDynamicRangeDb} }} };
+        root["acoustic"] = ac;
     }
     {
         const UnderwaterOpts &u = p.underwater();
@@ -666,6 +682,27 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             const QJsonArray noise = ac["noise_levels"].toArray();
             for (int i = 0; i < 7 && i < noise.size(); ++i)
                 a.noiseLevels[i] = noise[i].toDouble();
+        }
+        // 実測 RIR 分析設定 — 欠落キーは既定値のまま (旧ファイル互換)
+        if (ac.contains("opera_analysis")) {
+            const QJsonObject oa = ac["opera_analysis"].toObject();
+            OperaAcousticSettings &s = p.operaAcoustic();
+            s.enabled = oa.value("enabled").toBool(s.enabled);
+            s.rirPath = oa.value("rir_file").toString(s.rirPath);
+            s.voicePath = oa.value("voice_file").toString(s.voicePath);
+            s.voiceType = oa.value("voice_type").toInt(s.voiceType);
+            s.calibrationState =
+                oa.value("calibration_state").toInt(s.calibrationState);
+            s.directSoundMethod =
+                oa.value("direct_sound_method").toInt(s.directSoundMethod);
+            s.bandMode = oa.value("band_mode").toInt(s.bandMode);
+            s.channelMode = oa.value("channel_mode").toInt(s.channelMode);
+            const QJsonObject as = oa["analysis_settings"].toObject();
+            s.noiseCorrection =
+                as.value("noise_correction").toBool(s.noiseCorrection);
+            s.minimumDynamicRangeDb =
+                as.value("minimum_dynamic_range_db")
+                    .toDouble(s.minimumDynamicRangeDb);
         }
     }
     if (root.contains("underwater")) {

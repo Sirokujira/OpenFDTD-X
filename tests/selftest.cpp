@@ -18,6 +18,9 @@
 #include "core/GlassCatalog.h"
 #include "core/RoomAcoustics.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryFile>
 
 using namespace ofd;
@@ -323,6 +326,110 @@ static void testRoomAcoustics()
     }
 }
 
+// 実測 RIR 分析設定 (OperaAcousticSettings) の既定値と .ofdx 永続化。
+static void testOperaAcousticSettings()
+{
+    g_file = "opera";
+
+    // 1) 既定値 (指示仕様)
+    {
+        const OperaAcousticSettings s;
+        check(s.enabled == false, "opera default enabled=false");
+        check(s.rirPath.isEmpty() && s.voicePath.isEmpty(),
+              "opera default paths empty");
+        check(s.voiceType == 6, "opera default voiceType=Unknown");
+        check(s.calibrationState == 2, "opera default calibration=Uncalibrated");
+        check(s.directSoundMethod == 1, "opera default directSound=Envelope");
+        check(s.bandMode == 0, "opera default bandMode=Compat6");
+        check(s.noiseCorrection == true, "opera default noiseCorrection=true");
+        check(s.minimumDynamicRangeDb == 35.0, "opera default minDR=35dB");
+        check(s.channelMode == 2, "opera default channelMode=mono");
+    }
+
+    // 2) .ofdx 往復 (設定変更 → save → load → 一致)
+    {
+        Project p1;
+        OperaAcousticSettings &s = p1.operaAcoustic();
+        s.enabled = true;
+        s.rirPath = "/tmp/hall_stage.wav";
+        s.voicePath = "/tmp/aria.wav";
+        s.voiceType = 0;
+        s.calibrationState = 1;
+        s.directSoundMethod = 2;
+        s.bandMode = 3;
+        s.noiseCorrection = false;
+        s.minimumDynamicRangeDb = 42.5;
+        s.channelMode = 0;
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_opera_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "opera ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "opera ofdx load");
+            const OperaAcousticSettings &q = p2.operaAcoustic();
+            check(q.enabled == true, "opera rt enabled");
+            check(q.rirPath == "/tmp/hall_stage.wav", "opera rt rirPath");
+            check(q.voicePath == "/tmp/aria.wav", "opera rt voicePath");
+            check(q.voiceType == 0, "opera rt voiceType");
+            check(q.calibrationState == 1, "opera rt calibrationState");
+            check(q.directSoundMethod == 2, "opera rt directSoundMethod");
+            check(q.bandMode == 3, "opera rt bandMode");
+            check(q.noiseCorrection == false, "opera rt noiseCorrection");
+            check(nearlyEq(q.minimumDynamicRangeDb, 42.5), "opera rt minDR");
+            check(q.channelMode == 0, "opera rt channelMode");
+
+            // 4) 保存 JSON に既存 acoustic キーが残ること
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "opera ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject ac = root.value("acoustic").toObject();
+            check(ac.contains("rt60") && ac.contains("c80") &&
+                  ac.contains("d50") && ac.contains("sti") &&
+                  ac.contains("edt"), "opera json keeps metric flags");
+            check(ac.contains("sample_rate") && ac.contains("src_directivity") &&
+                  ac.contains("mic_count"), "opera json keeps fdtd keys");
+            check(ac.contains("room_l") && ac.contains("volume") &&
+                  ac.contains("absorption") && ac.contains("noise_levels"),
+                  "opera json keeps hall keys");
+            const QJsonObject oa = ac.value("opera_analysis").toObject();
+            check(oa.value("rir_file").toString() == "/tmp/hall_stage.wav",
+                  "opera json rir_file key");
+            check(oa.value("analysis_settings").toObject()
+                      .value("minimum_dynamic_range_db").toDouble() == 42.5,
+                  "opera json nested analysis_settings");
+        }
+    }
+
+    // 3) 旧 .ofdx (opera_analysis 無し): 既定値のまま + 既存キーは読める
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                "  \"acoustic\": { \"rt60\": false, \"sample_rate\": 96000,"
+                "                  \"room_l\": 25.5, \"occupancy\": 1 } }";
+            old.write(legacy);
+            old.flush();
+            Project p3;
+            // ロード前に非既定値を入れ、旧ファイルで上書きされないことを確認
+            p3.operaAcoustic().bandMode = 2;
+            check(OfdxIO::load(old.fileName(), p3), "legacy ofdx load");
+            const OperaAcousticSettings &q = p3.operaAcoustic();
+            check(q.bandMode == 2 && q.calibrationState == 2 &&
+                  q.minimumDynamicRangeDb == 35.0 && !q.enabled,
+                  "legacy ofdx leaves opera settings untouched");
+            const AcousticOpts &a = p3.acoustic();
+            check(a.rt60 == false && a.sampleRate == 96000,
+                  "legacy ofdx acoustic keys still load");
+            check(nearlyEq(a.roomL, 25.5) && a.occupancy == 1,
+                  "legacy ofdx hall keys still load");
+        }
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -379,6 +486,7 @@ int main(int argc, char *argv[])
     testVoxelizer();
     testGlassCatalog();
     testRoomAcoustics();
+    testOperaAcousticSettings();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

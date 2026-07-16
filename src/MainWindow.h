@@ -43,6 +43,7 @@ class Post2Tab;
 class OpticalTab;
 class GlassCatalogTab;
 class RoomAcousticsTab;
+class RirAnalysisTab;
 class AcousticTab;
 class UnderwaterTab;
 class Tidy3dTab;
@@ -108,6 +109,7 @@ private:
     Tidy3dTab     *m_tabTidy3d = nullptr;
     GlassCatalogTab  *m_tabGlass = nullptr;
     RoomAcousticsTab *m_tabRoomAc = nullptr;
+    RirAnalysisTab   *m_tabRirAnalysis = nullptr;
 
     QComboBox *m_engineBox = nullptr;
     QComboBox *m_modeBox = nullptr;

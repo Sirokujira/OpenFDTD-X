@@ -110,6 +110,23 @@ struct AcousticOpts {
     double  noiseLevels[7] = { 42, 38, 33, 28, 24, 21, 18 };  // 63..4kHz [dB]
 };
 
+// ── 実測 RIR 分析 (RirAnalysisTab, .ofdx "acoustic/opera_analysis") ─────────
+// オペラ歌手向けの実測インパルス応答分析の「設定のみ」を保持する。
+// 分析結果 (RirAnalysisResult) はモデルに持たない (毎回再計算する)。
+// 既存 AcousticOpts (統計推定) とは独立。
+struct OperaAcousticSettings {
+    bool    enabled = false;
+    QString rirPath;              // 実測 RIR の WAV ファイル
+    QString voicePath;            // 歌唱音源 WAV (可聴化・将来拡張用)
+    int     voiceType = 6;        // 0..5=Sop..Bass, 6=Unknown
+    int     calibrationState = 2; // 0=Absolute 1=Relative 2=Uncalibrated
+    int     directSoundMethod = 1;// 0=Peak 1=Envelope 2=MovingRms
+    int     bandMode = 0;         // 0=既存互換6帯域 1=1oct 2=1/3oct 3=フォルマント帯域
+    bool    noiseCorrection = true;
+    double  minimumDynamicRangeDb = 35.0;
+    int     channelMode = 2;      // 0=L 1=R 2=平均モノ
+};
+
 // ── 水中音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────
 struct SSPPoint { double depth_m; double c_mps; };
 
@@ -152,6 +169,7 @@ public:
     PostOpts           &post()        { return m_post; }
     OpticalOpts        &optical()     { return m_optical; }
     AcousticOpts       &acoustic()    { return m_acoustic; }
+    OperaAcousticSettings &operaAcoustic() { return m_operaAcoustic; }
     UnderwaterOpts     &underwater()  { return m_underwater; }
     Tidy3dOpts         &tidy3d()      { return m_tidy3d; }
 
@@ -166,6 +184,7 @@ public:
     const PostOpts          &post()       const { return m_post; }
     const OpticalOpts       &optical()    const { return m_optical; }
     const AcousticOpts      &acoustic()   const { return m_acoustic; }
+    const OperaAcousticSettings &operaAcoustic() const { return m_operaAcoustic; }
     const UnderwaterOpts    &underwater() const { return m_underwater; }
     const Tidy3dOpts        &tidy3d()     const { return m_tidy3d; }
 
@@ -212,6 +231,7 @@ private:
     PostOpts           m_post;
     OpticalOpts        m_optical;
     AcousticOpts       m_acoustic;
+    OperaAcousticSettings m_operaAcoustic;
     UnderwaterOpts     m_underwater;
     Tidy3dOpts         m_tidy3d;
     QStringList        m_extraLines;

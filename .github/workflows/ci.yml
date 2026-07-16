@@ -30,6 +30,16 @@ jobs:
       - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
         run: ./build/ofdx_selftest
 
+      # 音響コア (C++14) は上の Build ステップに含まれる。ここでは CTest に
+      # 登録された acoustics.* テストを実行する。合成 RIR による残響指標の
+      # 検証は acoustics.reverberation (test_reverberation) が担う。
+      # acoustics.c_api (tests/acoustics/test_c_api.c) は CMake により
+      # C コンパイラで -std=c99 としてビルドされるため、この ctest 実行が
+      # 「C API が純 C としてコンパイル・リンクできる」ことの検証を兼ねる。
+      # 外部ソルバーは不要 (テストは人工 RIR をその場で生成する)。
+      - name: Acoustics tests (ctest)
+        run: ctest --test-dir build --output-on-failure
+
       - name: GUI smoke (offscreen screenshot)
         run: |
           export QT_QPA_PLATFORM=offscreen XDG_RUNTIME_DIR=/tmp/xdg
@@ -68,3 +78,11 @@ jobs:
       - name: Self test
         run: build/Release/ofdx_selftest.exe
         shell: bash
+
+      # Linux と同様: CTest 登録済みの acoustics.* を実行する
+      # (acoustics.c_api は C99 としてコンパイルされた純 C テスト)。
+      # TMPDIR は test_wav の一時 wav 出力先 (既定 /tmp は Windows に無い)。
+      - name: Acoustics tests (ctest)
+        run: ctest --test-dir build -C Release --output-on-failure
+        env:
+          TMPDIR: ${{ runner.temp }}

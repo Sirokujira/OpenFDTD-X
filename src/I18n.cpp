@@ -546,6 +546,85 @@ void I18n::loadTables() {
     add("ra_report_title", "音響設計レポート (OpenFDTD-X ホール解析)",
         "Room-acoustics design report (OpenFDTD-X)");
 
+    // RIR analysis tab (measured impulse response)
+    add("t_riranalysis", "🎤 実測RIR分析", "🎤 Measured RIR");
+    add("rir_model_hint",
+        "実測した室内インパルス応答 (RIR) の WAV ファイルを ISO 3382-1 に基づき"
+        "分析します。「🏛 ホール解析」タブは統計モデルによる設計段階の推定、"
+        "本タブは実測RIRの分析です (FDTD 実行によるシミュレーションRIRの分析は"
+        "別途カーネル出力に対して行います)。",
+        "Analyzes a measured room impulse response (RIR) WAV per ISO 3382-1. "
+        "The Hall Analysis tab gives design-stage statistical estimates; this "
+        "tab analyzes measured RIRs (simulated RIRs from FDTD runs are "
+        "analyzed separately on kernel output).");
+    add("rir_input_section", "入力 (実測RIR)", "Input (measured RIR)");
+    add("rir_file", "RIR WAVファイル", "RIR WAV file");
+    add("rir_file_placeholder", "WAV ファイルを選択…", "Choose a WAV file…");
+    add("rir_browse", "参照…", "Browse…");
+    add("rir_wav_filter", "WAV ファイル (*.wav);;すべてのファイル (*)",
+        "WAV files (*.wav);;All files (*)");
+    add("rir_channel", "チャンネル", "Channel");
+    add("rir_ch_left", "L", "L");
+    add("rir_ch_right", "R", "R");
+    add("rir_ch_mono", "平均モノ", "Averaged mono");
+    add("rir_calibration", "校正状態", "Calibration");
+    add("rir_calib_absolute", "絶対校正済 (SPL 換算可)", "Absolute (SPL known)");
+    add("rir_calib_relative", "相対校正", "Relative");
+    add("rir_calib_uncalibrated", "未校正", "Uncalibrated");
+    add("rir_direct_method", "直接音検出", "Direct-sound detection");
+    add("rir_dm_peak", "ピーク", "Peak");
+    add("rir_dm_envelope", "包絡線閾値", "Envelope threshold");
+    add("rir_dm_movingrms", "移動RMS閾値", "Moving-RMS threshold");
+    add("rir_band_mode", "帯域モード", "Band mode");
+    add("rir_bm_compat6", "互換6帯域 (125Hz-4kHz)", "Compat 6 bands (125Hz-4kHz)");
+    add("rir_bm_oct", "1オクターブ (63Hz-8kHz)", "1 octave (63Hz-8kHz)");
+    add("rir_bm_thirdoct", "1/3オクターブ (100Hz-5kHz)", "1/3 octave (100Hz-5kHz)");
+    add("rir_bm_formant", "歌手フォルマント帯域 (2-4kHz)",
+        "Singer-formant bands (2-4kHz)");
+    add("rir_noise_correction", "ノイズ補正 (Chu 1978)",
+        "Noise correction (Chu 1978)");
+    add("rir_min_dr", "最小動的範囲", "Minimum dynamic range");
+    add("rir_run_section", "実行", "Run");
+    add("rir_run", "▶ RIR を分析", "▶ Analyze RIR");
+    add("rir_status_idle", "WAV ファイルを選択して実行してください。",
+        "Choose a WAV file and run the analysis.");
+    add("rir_status_nofile", "RIR WAV ファイルが選択されていません。",
+        "No RIR WAV file selected.");
+    add("rir_status_error", "分析失敗: %1 — %2", "Analysis failed: %1 — %2");
+    add("rir_status_ok",
+        "分析完了 — 総合品質: %1 / 動的範囲 %2 dB / 直接音 %3 ms",
+        "Done — overall quality: %1 / dynamic range %2 dB / direct sound %3 ms");
+    add("rir_result_section", "結果 (ISO 3382-1 指標)", "Results (ISO 3382-1)");
+    add("rir_metric", "指標", "Metric");
+    add("rir_band", "帯域", "Band");
+    add("rir_value", "値", "Value");
+    add("rir_unit", "単位", "Unit");
+    add("rir_quality", "品質", "Quality");
+    add("rir_note", "備考", "Note");
+    add("rir_not_computable", "算出不可", "Not computable");
+    add("rir_q_valid", "有効", "Valid");
+    add("rir_q_warning", "参考", "Warning");
+    add("rir_q_invalid", "無効", "Invalid");
+    add("rir_plot_section", "プロット", "Plots");
+    add("rir_waveform", "波形 (分析チャンネル)", "Waveform (analyzed channel)");
+    add("rir_decay", "エネルギー減衰曲線 (Schroeder)",
+        "Energy decay curve (Schroeder)");
+    add("rir_decay_label", "減衰", "decay");
+    add("rir_noise_floor", "ノイズフロア", "noise floor");
+    add("rir_time_ms", "時間 [ms]", "time [ms]");
+    add("rir_amplitude", "振幅", "amplitude");
+    add("rir_level_db", "レベル [dB]", "level [dB]");
+    add("rir_refl_section", "初期反射一覧 (0-20 / 20-80 / 80-200 / 200+ ms)",
+        "Early reflections (0-20 / 20-80 / 80-200 / 200+ ms)");
+    add("rir_refl_no", "#", "#");
+    add("rir_refl_time", "時刻 [ms]", "Arrival [ms]");
+    add("rir_refl_delay", "遅延 [ms]", "Delay [ms]");
+    add("rir_refl_level", "相対レベル [dB]", "Rel. level [dB]");
+    add("rir_refl_bin", "区分", "Bin");
+    add("rir_export_section", "出力", "Export");
+    add("rir_export_csv", "📄 CSV 保存", "📄 Save CSV");
+    add("rir_export_json", "📄 JSON 保存", "📄 Save JSON");
+
     // ev viewer
     add("ev_backend", "表示バックエンド", "Viewer backend");
     add("ev_html", "HTML出力 (-html) をブラウザで開く", "Open -html output in browser");

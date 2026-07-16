@@ -119,6 +119,14 @@ set(GUI_SOURCES
     src/tabs/RoomAcousticsTab.cpp
     src/tabs/RoomAcousticsTab.h
 
+    # オペラ音響分析 (実測RIR分析) — Qt アダプターと分析タブ
+    src/acoustics/qt/QtAcousticAdapter.cpp
+    src/acoustics/qt/QtAcousticAdapter.h
+    src/acoustics/qt/AcousticResultModel.cpp
+    src/acoustics/qt/AcousticResultModel.h
+    src/tabs/RirAnalysisTab.cpp
+    src/tabs/RirAnalysisTab.h
+
     resources/openfdtd.qrc
 )
 
@@ -149,6 +157,54 @@ set_target_properties(openfdtd_x PROPERTIES
     MACOSX_BUNDLE    ON
 )
 
+# ── Acoustic analysis core (Qt-free, strict C++14) ──────────────────────────
+# 音響コアは意図的に C++14 に固定する (プロジェクト全体の C++17 とは独立)。
+# Qt には一切リンクしない。
+add_library(ofdx_acoustic_core STATIC
+    src/acoustics/core/AcousticMetrics.cpp
+    src/acoustics/core/BandFilter.cpp
+    src/acoustics/core/DirectSoundDetector.cpp
+    src/acoustics/core/NoiseFloorEstimator.cpp
+    src/acoustics/core/ReflectionDetector.cpp
+    src/acoustics/core/RirAnalyzer.cpp
+    src/acoustics/core/SchroederDecay.cpp
+    src/acoustics/io/WavReader.cpp
+    src/acoustics/io/WavWriter.cpp
+)
+target_include_directories(ofdx_acoustic_core PUBLIC src)
+
+# GUI (QtAcousticAdapter 経由) から C++14 コアを利用する
+target_link_libraries(openfdtd_x PRIVATE ofdx_acoustic_core)
+set_target_properties(ofdx_acoustic_core PROPERTIES
+    AUTOMOC               OFF
+    CXX_STANDARD          14
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS        OFF
+)
+if(MSVC)
+    target_compile_options(ofdx_acoustic_core PRIVATE /utf-8 /W3)
+else()
+    target_compile_options(ofdx_acoustic_core PRIVATE -Wall -Wextra)
+endif()
+
+# ── Acoustic C API (stable C ABI over the core, C++14) ──────────────────────
+add_library(ofdx_acoustic_c_api STATIC
+    src/acoustics/c_api/openfdtd_x_acoustics.cpp
+    src/acoustics/c_api/openfdtd_x_acoustics.h
+)
+target_link_libraries(ofdx_acoustic_c_api PUBLIC ofdx_acoustic_core)
+set_target_properties(ofdx_acoustic_c_api PROPERTIES
+    AUTOMOC               OFF
+    CXX_STANDARD          14
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS        OFF
+)
+if(MSVC)
+    target_compile_options(ofdx_acoustic_c_api PRIVATE /utf-8 /W3)
+else()
+    target_compile_options(ofdx_acoustic_c_api PRIVATE -Wall -Wextra)
+endif()
+
 # ── Self test: .ofd round-trip against ../data/sample ───────────────────────
 if(BUILD_TESTS)
     qt_add_executable(ofdx_selftest ${CORE_SOURCES} tests/selftest.cpp)
@@ -157,5 +213,54 @@ if(BUILD_TESTS)
     set_target_properties(ofdx_selftest PROPERTIES
         WIN32_EXECUTABLE OFF
         MACOSX_BUNDLE    OFF
+    )
+endif()
+
+# ── Acoustics tests (CTest) ──────────────────────────────────────────────────
+if(BUILD_TESTS)
+    enable_language(C)  # test_c_api.c は純 C (C99) としてコンパイルする
+    enable_testing()
+
+    # C++ 単体テスト (各 tests/acoustics/test_*.cpp → 個別実行ファイル)
+    set(OFDX_ACOUSTIC_TESTS
+        clarity
+        direct_sound
+        reflections
+        reverberation
+        schroeder
+        wav
+    )
+    foreach(_t IN LISTS OFDX_ACOUSTIC_TESTS)
+        add_executable(ofdx_test_${_t} tests/acoustics/test_${_t}.cpp)
+        target_link_libraries(ofdx_test_${_t} PRIVATE ofdx_acoustic_core)
+        set_target_properties(ofdx_test_${_t} PROPERTIES
+            AUTOMOC               OFF
+            CXX_STANDARD          14
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS        OFF
+        )
+        add_test(NAME acoustics.${_t} COMMAND ofdx_test_${_t})
+    endforeach()
+
+    # C API テスト — 純 C (C99) としてコンパイルされることが検証項目
+    add_executable(ofdx_test_c_api tests/acoustics/test_c_api.c)
+    target_link_libraries(ofdx_test_c_api PRIVATE ofdx_acoustic_c_api)
+    set_target_properties(ofdx_test_c_api PROPERTIES
+        AUTOMOC             OFF
+        C_STANDARD          99
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS        OFF
+    )
+    add_test(NAME acoustics.c_api COMMAND ofdx_test_c_api)
+
+    # 人工 RIR 生成 CLI (wav はコミットせず実行時に生成する)
+    add_executable(ofdx_generate_synthetic_rir
+        tests/generators/generate_synthetic_rir.cpp)
+    target_link_libraries(ofdx_generate_synthetic_rir PRIVATE ofdx_acoustic_core)
+    set_target_properties(ofdx_generate_synthetic_rir PROPERTIES
+        AUTOMOC               OFF
+        CXX_STANDARD          14
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS        OFF
     )
 endif()
