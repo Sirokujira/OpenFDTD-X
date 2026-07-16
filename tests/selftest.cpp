@@ -344,6 +344,13 @@ static void testOperaAcousticSettings()
         check(s.noiseCorrection == true, "opera default noiseCorrection=true");
         check(s.minimumDynamicRangeDb == 35.0, "opera default minDR=35dB");
         check(s.channelMode == 2, "opera default channelMode=mono");
+        // 可聴化 (フェーズ4) / 歌声分析 (フェーズ3) の既定値
+        check(s.auralizationDryFile.isEmpty() &&
+              s.auralizationOutputFile.isEmpty(),
+              "opera default auralization paths empty");
+        check(s.auralizationGainMode == 0, "opera default gainMode=as-is");
+        check(s.vocalF0MinHz == 0.0 && s.vocalF0MaxHz == 0.0,
+              "opera default vocal F0 override=auto(0)");
     }
 
     // 2) .ofdx 往復 (設定変更 → save → load → 一致)
@@ -360,6 +367,11 @@ static void testOperaAcousticSettings()
         s.noiseCorrection = false;
         s.minimumDynamicRangeDb = 42.5;
         s.channelMode = 0;
+        s.auralizationDryFile = "/tmp/aria_dry.wav";
+        s.auralizationOutputFile = "/tmp/aria_wet.wav";
+        s.auralizationGainMode = 1;
+        s.vocalF0MinHz = 200.0;
+        s.vocalF0MaxHz = 1200.0;
 
         QTemporaryFile ofdx;
         ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_opera_XXXXXX.ofdx");
@@ -378,6 +390,13 @@ static void testOperaAcousticSettings()
             check(q.noiseCorrection == false, "opera rt noiseCorrection");
             check(nearlyEq(q.minimumDynamicRangeDb, 42.5), "opera rt minDR");
             check(q.channelMode == 0, "opera rt channelMode");
+            check(q.auralizationDryFile == "/tmp/aria_dry.wav",
+                  "opera rt auralization dryFile");
+            check(q.auralizationOutputFile == "/tmp/aria_wet.wav",
+                  "opera rt auralization outputFile");
+            check(q.auralizationGainMode == 1, "opera rt auralization gainMode");
+            check(nearlyEq(q.vocalF0MinHz, 200.0), "opera rt vocal f0Min");
+            check(nearlyEq(q.vocalF0MaxHz, 1200.0), "opera rt vocal f0Max");
 
             // 4) 保存 JSON に既存 acoustic キーが残ること
             QFile jf(ofdx.fileName());
@@ -399,6 +418,18 @@ static void testOperaAcousticSettings()
             check(oa.value("analysis_settings").toObject()
                       .value("minimum_dynamic_range_db").toDouble() == 42.5,
                   "opera json nested analysis_settings");
+            // docs §2.1 / 指示書: auralization と vocal のネスト
+            const QJsonObject au = oa.value("auralization").toObject();
+            check(au.value("dry_file").toString() == "/tmp/aria_dry.wav",
+                  "opera json auralization dry_file");
+            check(au.value("output_file").toString() == "/tmp/aria_wet.wav",
+                  "opera json auralization output_file");
+            check(au.value("gain_mode").toInt() == 1,
+                  "opera json auralization gain_mode");
+            const QJsonObject vo = oa.value("vocal").toObject();
+            check(vo.value("f0_min_hz").toDouble() == 200.0 &&
+                  vo.value("f0_max_hz").toDouble() == 1200.0,
+                  "opera json vocal f0 range");
         }
     }
 
@@ -421,6 +452,12 @@ static void testOperaAcousticSettings()
             check(q.bandMode == 2 && q.calibrationState == 2 &&
                   q.minimumDynamicRangeDb == 35.0 && !q.enabled,
                   "legacy ofdx leaves opera settings untouched");
+            check(q.auralizationDryFile.isEmpty() &&
+                  q.auralizationOutputFile.isEmpty() &&
+                  q.auralizationGainMode == 0,
+                  "legacy ofdx leaves auralization defaults");
+            check(q.vocalF0MinHz == 0.0 && q.vocalF0MaxHz == 0.0,
+                  "legacy ofdx leaves vocal defaults");
             const AcousticOpts &a = p3.acoustic();
             check(a.rt60 == false && a.sampleRate == 96000,
                   "legacy ofdx acoustic keys still load");

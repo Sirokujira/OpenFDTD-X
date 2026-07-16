@@ -1,8 +1,11 @@
 // QtAcousticAdapter.cpp
 #include "QtAcousticAdapter.h"
+#include "../io/WavWriter.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <algorithm>
+#include <cmath>
 
 using namespace ofd;
 using namespace ofd::acoustics;
@@ -111,4 +114,102 @@ QtAcousticAdapter::decayCurve(const std::vector<double> &samples,
     opt.noiseCompensation = settings.noiseCorrection;
     return computeSchroederDecay(ArrayView<const double>(samples),
                                  sampleRateHz, opt);
+}
+
+// ── 歌声分析 (フェーズ3) ─────────────────────────────────────────────────────
+VocalAnalyzerConfig
+QtAcousticAdapter::toVocalConfig(const OperaAcousticSettings &s)
+{
+    VocalAnalyzerConfig cfg;
+
+    // 0..5 = Soprano..Bass, それ以外 = Unknown (enum と同順、docs §2)
+    switch (s.voiceType) {
+    case 0:  cfg.voiceType = VoiceType::Soprano;      break;
+    case 1:  cfg.voiceType = VoiceType::MezzoSoprano; break;
+    case 2:  cfg.voiceType = VoiceType::Contralto;    break;
+    case 3:  cfg.voiceType = VoiceType::Tenor;        break;
+    case 4:  cfg.voiceType = VoiceType::Baritone;     break;
+    case 5:  cfg.voiceType = VoiceType::Bass;         break;
+    default: cfg.voiceType = VoiceType::Unknown;      break;
+    }
+    // > 0 のときのみ声種プリセットを上書き (0 = 自動)
+    cfg.f0MinHz = s.vocalF0MinHz;
+    cfg.f0MaxHz = s.vocalF0MaxHz;
+
+    switch (s.calibrationState) {
+    case 0:  cfg.calibration = CalibrationState::Absolute;     break;
+    case 1:  cfg.calibration = CalibrationState::Relative;     break;
+    default: cfg.calibration = CalibrationState::Uncalibrated; break;
+    }
+    // calibrationOffsetDb (dBFS→SPL) は .ofdx 未導入 (docs 予約キー) のため 0
+    return cfg;
+}
+
+AcousticResult<VocalAnalysisResult>
+QtAcousticAdapter::analyzeVocalFile(const QString &path,
+                                    const OperaAcousticSettings &settings)
+{
+    const AcousticResult<AudioBuffer> wav = readWav(path);
+    if (!wav.success())
+        return AcousticResult<VocalAnalysisResult>::error(wav.errorCode(),
+                                                          wav.message());
+    const std::vector<double> samples =
+        selectChannel(wav.value(), settings.channelMode);
+    const VocalAnalyzer analyzer(toVocalConfig(settings));
+    return analyzer.analyze(ArrayView<const double>(samples),
+                            wav.value().sampleRateHz);
+}
+
+// ── 可聴化 (フェーズ4) ───────────────────────────────────────────────────────
+AcousticResult<ConvolutionInfo>
+QtAcousticAdapter::convolveFiles(const QString &dryPath, const QString &rirPath,
+                                 const QString &outputPath, int gainMode,
+                                 std::vector<double> *outDry,
+                                 std::vector<double> *outWet,
+                                 double *outSampleRate)
+{
+    typedef AcousticResult<ConvolutionInfo> Result;
+
+    const AcousticResult<AudioBuffer> dry = readWav(dryPath);
+    if (!dry.success())
+        return Result::error(dry.errorCode(),
+                             std::string("dry: ") + dry.message());
+    const AcousticResult<AudioBuffer> rir = readWav(rirPath);
+    if (!rir.success())
+        return Result::error(rir.errorCode(),
+                             std::string("rir: ") + rir.message());
+    if (outputPath.trimmed().isEmpty())
+        return Result::error(AcousticErrorCode::InvalidArgument,
+                             "empty output path");
+
+    // 畳み込み (fs 不一致はコアがリサンプリングせずエラーにする)
+    const ConvolutionEngine engine;
+    AcousticResult<ConvolvedAudio> conv =
+        engine.convolve(dry.value(), rir.value());
+    if (!conv.success())
+        return Result::error(conv.errorCode(), conv.message());
+
+    ConvolvedAudio &out = conv.value();
+    ConvolutionInfo info = out.info;
+
+    // gainMode 1: 推奨ゲイン (ピーク→フルスケール) を書き出し値に適用する。
+    // info の outputPeak / clippedSampleCount は畳み込み値そのままの報告。
+    if (gainMode == 1) {
+        const double g = std::pow(10.0, info.suggestedGainDb / 20.0);
+        for (std::size_t ch = 0; ch < out.audio.channelCount(); ++ch)
+            for (double &v : out.audio.channels[ch])
+                v *= g;
+        info.warnings.push_back("suggested gain applied to output file");
+    }
+
+    const AcousticResult<bool> wr = writeWavFile(
+        std::string(QFile::encodeName(outputPath).constData()),
+        out.audio, WavSampleFormat::Float32);
+    if (!wr.success())
+        return Result::error(wr.errorCode(), wr.message());
+
+    if (outDry) *outDry = selectChannel(dry.value(), 2);
+    if (outWet && out.audio.channelCount() > 0) *outWet = out.audio.channels[0];
+    if (outSampleRate) *outSampleRate = out.audio.sampleRateHz;
+    return Result::ok(info);
 }

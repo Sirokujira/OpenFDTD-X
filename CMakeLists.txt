@@ -127,6 +127,14 @@ set(GUI_SOURCES
     src/tabs/RirAnalysisTab.cpp
     src/tabs/RirAnalysisTab.h
 
+    # フェーズ3〜5 — 歌唱分析 / 可聴化タブと外部音響ソルバーランナー
+    src/tabs/VocalAnalysisTab.cpp
+    src/tabs/VocalAnalysisTab.h
+    src/tabs/AuralizationTab.cpp
+    src/tabs/AuralizationTab.h
+    src/kernel/AcousticRunner.cpp
+    src/kernel/AcousticRunner.h
+
     resources/openfdtd.qrc
 )
 
@@ -161,6 +169,7 @@ set_target_properties(openfdtd_x PROPERTIES
 # 音響コアは意図的に C++14 に固定する (プロジェクト全体の C++17 とは独立)。
 # Qt には一切リンクしない。
 add_library(ofdx_acoustic_core STATIC
+    src/acoustics/core/AcousticFdtdEstimator.cpp
     src/acoustics/core/AcousticMetrics.cpp
     src/acoustics/core/BandFilter.cpp
     src/acoustics/core/ConvolutionEngine.cpp
@@ -229,6 +238,7 @@ if(BUILD_TESTS)
         clarity
         convolution
         direct_sound
+        estimator
         fft
         reflections
         reverberation
@@ -258,6 +268,41 @@ if(BUILD_TESTS)
         C_EXTENSIONS        OFF
     )
     add_test(NAME acoustics.c_api COMMAND ofdx_test_c_api)
+
+    # ── 外部音響ソルバー疎結合 (フェーズ5) ────────────────────────────────
+    # モックソルバー: 出力契約 (metadata.json / rir.wav / metrics.json /
+    # solver.log) の実行可能な仕様を兼ねる純 C99 実行ファイル (ADR-0007)。
+    add_executable(ofdx_mock_acoustic_solver
+        tests/acoustics/mock_acoustic_solver.c)
+    set_target_properties(ofdx_mock_acoustic_solver PROPERTIES
+        AUTOMOC             OFF
+        C_STANDARD          99
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS        OFF
+    )
+    if(UNIX)
+        # exp()/sqrt() のため (MSVC は libm 分離なし)
+        target_link_libraries(ofdx_mock_acoustic_solver PRIVATE m)
+    endif()
+
+    # AcousticRunner 統合テスト: モック起動 → 進捗解析 → 契約検証 →
+    # WavReader → RirAnalyzer (T30)。Qt 依存テストのため C++17 でよい
+    # (音響コアの C++14 縛りの対象外)。AUTOMOC はグローバル設定 (ON) を
+    # そのまま使う (AcousticRunner が Q_OBJECT を持つ)。
+    qt_add_executable(ofdx_test_acoustic_runner
+        tests/acoustics/test_acoustic_runner.cpp
+        src/kernel/AcousticRunner.cpp
+        src/kernel/AcousticRunner.h
+    )
+    target_include_directories(ofdx_test_acoustic_runner PRIVATE src)
+    target_link_libraries(ofdx_test_acoustic_runner PRIVATE
+        Qt6::Core ofdx_acoustic_core)
+    set_target_properties(ofdx_test_acoustic_runner PROPERTIES
+        WIN32_EXECUTABLE OFF
+        MACOSX_BUNDLE    OFF
+    )
+    add_test(NAME acoustics.runner COMMAND ofdx_test_acoustic_runner
+        $<TARGET_FILE:ofdx_mock_acoustic_solver>)
 
     # 人工 RIR 生成 CLI (wav はコミットせず実行時に生成する)
     add_executable(ofdx_generate_synthetic_rir

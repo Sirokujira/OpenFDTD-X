@@ -44,6 +44,8 @@ class OpticalTab;
 class GlassCatalogTab;
 class RoomAcousticsTab;
 class RirAnalysisTab;
+class VocalAnalysisTab;
+class AuralizationTab;
 class AcousticTab;
 class UnderwaterTab;
 class Tidy3dTab;
@@ -110,6 +112,8 @@ private:
     GlassCatalogTab  *m_tabGlass = nullptr;
     RoomAcousticsTab *m_tabRoomAc = nullptr;
     RirAnalysisTab   *m_tabRirAnalysis = nullptr;
+    VocalAnalysisTab *m_tabVocal = nullptr;
+    AuralizationTab  *m_tabAuralization = nullptr;
 
     QComboBox *m_engineBox = nullptr;
     QComboBox *m_modeBox = nullptr;

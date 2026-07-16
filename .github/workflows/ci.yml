@@ -36,7 +36,10 @@ jobs:
       # acoustics.c_api (tests/acoustics/test_c_api.c) は CMake により
       # C コンパイラで -std=c99 としてビルドされるため、この ctest 実行が
       # 「C API が純 C としてコンパイル・リンクできる」ことの検証を兼ねる。
-      # 外部ソルバーは不要 (テストは人工 RIR をその場で生成する)。
+      # 実外部ソルバーは不要: 人工 RIR はその場で生成し、フェーズ5 の
+      # acoustics.runner はビルド済みモックソルバー
+      # (ofdx_mock_acoustic_solver — 出力契約の参照実装) を起動して
+      # AcousticRunner → 契約検証 → RirAnalyzer の統合経路を検証する。
       - name: Acoustics tests (ctest)
         run: ctest --test-dir build --output-on-failure
 

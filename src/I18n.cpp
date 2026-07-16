@@ -625,6 +625,109 @@ void I18n::loadTables() {
     add("rir_export_csv", "📄 CSV 保存", "📄 Save CSV");
     add("rir_export_json", "📄 JSON 保存", "📄 Save JSON");
 
+    // Vocal analysis tab (single unaccompanied monophonic singing)
+    add("t_vocalanalysis", "🎶 歌声分析", "🎶 Vocal Analysis");
+    add("vocal_scope_note",
+        "単一・無伴奏・モノフォニック歌唱の WAV が分析対象です (合唱・伴奏付き・"
+        "ポリフォニック音源は対象外)。本タブは物理量の測定のみを行い、声種は "
+        "F0 探索範囲プリセットの選択にのみ使用します。",
+        "Analyzes a WAV of a single unaccompanied monophonic voice (choirs, "
+        "accompanied or polyphonic sources are out of scope). This tab only "
+        "measures physical quantities; the voice type merely selects the F0 "
+        "search-range preset.");
+    add("vocal_input_section", "入力 (歌唱 WAV)", "Input (singing WAV)");
+    add("vocal_file", "歌唱 WAVファイル", "Singing WAV file");
+    add("vocal_voice_type", "声種 (F0探索範囲)", "Voice type (F0 search range)");
+    add("vocal_vt_soprano", "ソプラノ (220-1400 Hz)", "Soprano (220-1400 Hz)");
+    add("vocal_vt_mezzo", "メゾソプラノ (180-1000 Hz)",
+        "Mezzo-soprano (180-1000 Hz)");
+    add("vocal_vt_contralto", "アルト (150-800 Hz)", "Contralto (150-800 Hz)");
+    add("vocal_vt_tenor", "テノール (120-700 Hz)", "Tenor (120-700 Hz)");
+    add("vocal_vt_baritone", "バリトン (90-500 Hz)", "Baritone (90-500 Hz)");
+    add("vocal_vt_bass", "バス (70-400 Hz)", "Bass (70-400 Hz)");
+    add("vocal_vt_unknown", "不明 (60-1500 Hz)", "Unknown (60-1500 Hz)");
+    add("vocal_f0_min", "F0 探索下限の上書き", "F0 search min override");
+    add("vocal_f0_max", "F0 探索上限の上書き", "F0 search max override");
+    add("vocal_f0_auto", "自動 (声種プリセット)", "Auto (voice-type preset)");
+    add("vocal_calibration", "校正状態 (実測RIR分析タブで設定)",
+        "Calibration (set in Measured RIR tab)");
+    add("vocal_calib_spl_ok", "SPL 系指標を算出します",
+        "SPL metrics will be computed");
+    add("vocal_calib_spl_na", "SPL 系指標は算出不可 (dBFS 相対値のみ)",
+        "SPL metrics not computable (dBFS only)");
+    add("vocal_run_section", "実行", "Run");
+    add("vocal_run", "▶ 歌声を分析", "▶ Analyze voice");
+    add("vocal_status_idle", "歌唱 WAV ファイルを選択して実行してください。",
+        "Choose a singing WAV file and run the analysis.");
+    add("vocal_status_nofile", "歌唱 WAV ファイルが選択されていません。",
+        "No singing WAV file selected.");
+    add("vocal_status_error", "分析失敗: %1 — %2", "Analysis failed: %1 — %2");
+    add("vocal_status_ok",
+        "分析完了 — 総合品質: %1 / 有声率 %2% / F0中央値 %3",
+        "Done — overall quality: %1 / voiced %2% / F0 median %3");
+    add("vocal_result_section", "結果 (歌声指標)", "Results (vocal metrics)");
+    add("vocal_plot_section", "プロット", "Plots");
+    add("vocal_f0_plot", "F0 軌跡 (無声区間は欠落)",
+        "F0 contour (gaps = unvoiced)");
+    add("vocal_ltas_plot", "LTAS (長時間平均スペクトル)",
+        "LTAS (long-term average spectrum)");
+    add("vocal_time_s", "時間 [s]", "time [s]");
+    add("vocal_f0_hz", "F0 [Hz]", "F0 [Hz]");
+    add("vocal_freq_hz", "周波数 [Hz]", "frequency [Hz]");
+
+    // Auralization tab (dry voice × RIR convolution)
+    add("t_auralization", "🔊 可聴化", "🔊 Auralization");
+    add("aur_model_hint",
+        "ドライ (無響/近接収録) 歌唱 WAV と実測 RIR WAV を畳み込み、ホールで"
+        "歌ったときの音をウェット WAV (float32) として書き出します。自動正規化"
+        "とリサンプリングは行いません (fs 不一致はエラーになります)。",
+        "Convolves a dry (anechoic/close-mic) singing WAV with a measured RIR "
+        "WAV and writes the wet result as a float32 WAV. No automatic "
+        "normalization or resampling is performed (a sample-rate mismatch is "
+        "an error).");
+    add("aur_input_section", "入力", "Input");
+    add("aur_dry_file", "ドライ歌唱 WAV", "Dry singing WAV");
+    add("aur_rir_file", "RIR WAV (実測RIR分析タブと共用)",
+        "RIR WAV (shared with Measured RIR tab)");
+    add("aur_output_file", "出力 WAV (ウェット)", "Output WAV (wet)");
+    add("aur_output_placeholder", "保存先を選択…", "Choose an output file…");
+    add("aur_gain_mode", "ゲインモード", "Gain mode");
+    add("aur_gain_asis", "そのまま (ゲイン適用なし)", "As-is (no gain)");
+    add("aur_gain_suggested", "推奨ゲイン適用 (ピーク→フルスケール)",
+        "Apply suggested gain (peak → full scale)");
+    add("aur_run_section", "実行", "Run");
+    add("aur_run", "▶ 畳み込みを実行", "▶ Convolve");
+    add("aur_status_idle",
+        "ドライ WAV と RIR WAV を選択して実行してください。",
+        "Choose a dry WAV and an RIR WAV, then run.");
+    add("aur_status_nofile",
+        "ドライ WAV または RIR WAV が選択されていません。",
+        "Dry WAV or RIR WAV not selected.");
+    add("aur_status_nooutput", "出力 WAV の保存先が指定されていません。",
+        "No output WAV file chosen.");
+    add("aur_status_error", "畳み込み失敗: %1 — %2",
+        "Convolution failed: %1 — %2");
+    add("aur_no_resample_note",
+        "サンプルレートが一致していません。本機能はリサンプリングを行わない"
+        "ため、外部ツールで fs を揃えてから再実行してください。",
+        "Sample rates do not match. This feature does not resample; convert "
+        "the files to a common rate externally and retry.");
+    add("aur_status_ok", "完了 — 出力: %1", "Done — output: %1");
+    add("aur_result_section", "結果", "Results");
+    add("aur_output_peak", "出力ピーク", "Output peak");
+    add("aur_suggested_gain", "推奨ゲイン", "Suggested gain");
+    add("aur_clipped_samples", "クリップ", "Clipping");
+    add("aur_clipped_yes", "あり (%1 サンプル)", "Yes (%1 samples)");
+    add("aur_clipped_no", "なし", "None");
+    add("aur_ab_section", "A/B 比較 (波形)", "A/B comparison (waveforms)");
+    add("aur_dry_wave", "ドライ (入力)", "Dry (input)");
+    add("aur_wet_wave", "ウェット (出力)", "Wet (output)");
+    add("aur_playback_note",
+        "アプリ内での再生は未対応です。書き出した WAV を外部プレイヤーで"
+        "ドライ音源と聴き比べてください。",
+        "In-app playback is not supported. Compare the exported WAV with the "
+        "dry source in an external audio player.");
+
     // ev viewer
     add("ev_backend", "表示バックエンド", "Viewer backend");
     add("ev_html", "HTML出力 (-html) をブラウザで開く", "Open -html output in browser");

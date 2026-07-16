@@ -27,6 +27,8 @@
 #include "tabs/GlassCatalogTab.h"
 #include "tabs/RoomAcousticsTab.h"
 #include "tabs/RirAnalysisTab.h"
+#include "tabs/VocalAnalysisTab.h"
+#include "tabs/AuralizationTab.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -234,6 +236,8 @@ void MainWindow::buildCentral()
     m_tabGlass     = new GlassCatalogTab(m_project);
     m_tabRoomAc    = new RoomAcousticsTab(m_project);
     m_tabRirAnalysis = new RirAnalysisTab(m_project);
+    m_tabVocal     = new VocalAnalysisTab(m_project);
+    m_tabAuralization = new AuralizationTab(m_project);
 
     m_leftTabs->addTab(m_tabGeneral, I18n::tr("t_general"));
     m_leftTabs->addTab(m_tabMesh, I18n::tr("t_mesh"));
@@ -320,6 +324,8 @@ void MainWindow::onDomainChanged(Domain d)
     removeTab(m_tabGlass);
     removeTab(m_tabRoomAc);
     removeTab(m_tabRirAnalysis);
+    removeTab(m_tabVocal);
+    removeTab(m_tabAuralization);
 
     switch (d) {
     case Domain::Optical:
@@ -332,6 +338,8 @@ void MainWindow::onDomainChanged(Domain d)
         m_leftTabs->addTab(m_tabAcoustic, I18n::tr("t_acoustic"));
         m_leftTabs->addTab(m_tabRoomAc, I18n::tr("t_roomac"));
         m_leftTabs->addTab(m_tabRirAnalysis, I18n::tr("t_riranalysis"));
+        m_leftTabs->addTab(m_tabVocal, I18n::tr("t_vocalanalysis"));
+        m_leftTabs->addTab(m_tabAuralization, I18n::tr("t_auralization"));
         break;
     case Domain::Underwater:
         m_leftTabs->addTab(m_tabUnderwater, I18n::tr("t_underwater"));

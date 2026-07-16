@@ -10,8 +10,10 @@
 #include <QString>
 #include <vector>
 
+#include "../core/ConvolutionEngine.h"
 #include "../core/RirAnalyzer.h"
 #include "../core/SchroederDecay.h"
+#include "../core/VocalAnalyzer.h"
 #include "../io/WavReader.h"
 #include "../../core/Project.h"
 
@@ -49,6 +51,30 @@ public:
     static acoustics::SchroederResult
     decayCurve(const std::vector<double> &samples, double sampleRateHz,
                const OperaAcousticSettings &settings);
+
+    // ── 歌声分析 (フェーズ3) ────────────────────────────────────────────────
+    // OperaAcousticSettings → コアの VocalAnalyzerConfig 変換
+    // (voiceType / calibrationState / vocalF0MinHz / vocalF0MaxHz)。
+    // 校正オフセット (dBFS→SPL) は未導入のため 0 のまま。
+    static acoustics::VocalAnalyzerConfig
+    toVocalConfig(const OperaAcousticSettings &settings);
+
+    // 歌唱 WAV を読み込み → チャンネル選択 → VocalAnalyzer で分析する
+    static acoustics::AcousticResult<acoustics::VocalAnalysisResult>
+    analyzeVocalFile(const QString &path, const OperaAcousticSettings &settings);
+
+    // ── 可聴化 (フェーズ4) ──────────────────────────────────────────────────
+    // dry WAV × rir WAV を畳み込み、outputPath に float32 WAV で書き出す。
+    // gainMode: 0=そのまま 1=推奨ゲイン (suggestedGainDb) を適用。
+    // 自動正規化はしない。サンプルレート不一致はリサンプリングせずエラー。
+    // outDry / outWet / outSampleRate が非 null なら A/B 波形プロット用に
+    // ドライ (選択後モノ) / ウェット先頭チャンネル (書き出し値) を返す。
+    static acoustics::AcousticResult<acoustics::ConvolutionInfo>
+    convolveFiles(const QString &dryPath, const QString &rirPath,
+                  const QString &outputPath, int gainMode,
+                  std::vector<double> *outDry = nullptr,
+                  std::vector<double> *outWet = nullptr,
+                  double *outSampleRate = nullptr);
 };
 
 } // namespace ofd

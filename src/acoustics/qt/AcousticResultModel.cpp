@@ -244,3 +244,212 @@ QString AcousticResultModel::toJson(const RirAnalysisResult &result)
     return QString::fromUtf8(
         QJsonDocument(root).toJson(QJsonDocument::Indented));
 }
+
+// ── 歌声分析 (VocalAnalysisResult) ──────────────────────────────────────────
+namespace {
+
+AcousticResultRow vocalRow(const char *metric, const QString &band,
+                           const MetricValue &m, const char *unit,
+                           int decimals)
+{
+    AcousticResultRow row;
+    row.metric = QLatin1String(metric);
+    row.band = band;
+    row.unit = QLatin1String(unit);
+    row.valid = m.valid;
+    row.value = m.value;
+    if (m.valid)
+        row.valueText = QString::number(m.value, 'f', decimals);
+    row.quality = AcousticResultModel::qualityToken(m.quality);
+    row.warning = QString::fromStdString(m.warning);
+    return row;
+}
+
+} // namespace
+
+QVector<AcousticResultRow>
+AcousticResultModel::vocalRows(const VocalAnalysisResult &r)
+{
+    const QString full = QStringLiteral("Full band");
+    QVector<AcousticResultRow> rows;
+    rows.reserve(16 + int(r.bandEnergies.size()));
+
+    // F0 統計
+    rows.push_back(vocalRow("F0 median", full, r.f0MedianHz, "Hz", 1));
+    rows.push_back(vocalRow("F0 mean", full, r.f0MeanHz, "Hz", 1));
+    rows.push_back(vocalRow("F0 min", full, r.f0MinHz, "Hz", 1));
+    rows.push_back(vocalRow("F0 max", full, r.f0MaxHz, "Hz", 1));
+    rows.push_back(vocalRow("Pitch stability", full,
+                            r.pitchStabilityCents, "cent", 1));
+
+    // ビブラート (metric 側の warning が空なら vibrato 全体の理由を使う)
+    AcousticResultRow vr =
+        vocalRow("Vibrato rate", full, r.vibrato.rateHz, "Hz", 2);
+    AcousticResultRow vd =
+        vocalRow("Vibrato depth", full, r.vibrato.depthCents, "cent", 1);
+    const QString vibratoWhy = QString::fromStdString(r.vibrato.warning);
+    if (vr.warning.isEmpty()) vr.warning = vibratoWhy;
+    if (vd.warning.isEmpty()) vd.warning = vibratoWhy;
+    rows.push_back(vr);
+    rows.push_back(vd);
+
+    // スペクトル系・声質系
+    rows.push_back(vocalRow("HNR", full, r.hnrDb, "dB", 1));
+    rows.push_back(vocalRow("Spectral centroid", full,
+                            r.spectralCentroidHz, "Hz", 0));
+    rows.push_back(vocalRow("Singer formant ratio (2-4k/0-2k)", full,
+                            r.singerFormantRatioDb, "dB", 1));
+
+    // 帯域エネルギー (LTAS 積算)
+    for (const BandEnergyValue &b : r.bandEnergies)
+        rows.push_back(vocalRow("Band energy", bandLabel(b.band),
+                                b.levelDb, "dB", 1));
+
+    // レベル (dBFS は常に valid、SPL は Absolute 校正時のみ valid)
+    rows.push_back(vocalRow("Peak", full, r.peakDbfs, "dBFS", 1));
+    rows.push_back(vocalRow("RMS", full, r.rmsDbfs, "dBFS", 1));
+    rows.push_back(vocalRow("Leq", full, r.leqDbfs, "dBFS", 1));
+    rows.push_back(vocalRow("Leq (SPL)", full, r.leqSplDb, "dB SPL", 1));
+    rows.push_back(vocalRow("Peak (SPL)", full, r.peakSplDb, "dB SPL", 1));
+    return rows;
+}
+
+QString AcousticResultModel::toCsv(const VocalAnalysisResult &r)
+{
+    QString out;
+    out += QStringLiteral("section,metric,band,value,unit,valid,quality,warning\n");
+    for (const AcousticResultRow &row : vocalRows(r)) {
+        out += QStringLiteral("metrics,%1,%2,%3,%4,%5,%6,%7\n")
+                   .arg(csvEscape(row.metric), csvEscape(row.band),
+                        row.valid ? row.valueText : QString(),
+                        row.unit, row.valid ? QStringLiteral("1")
+                                            : QStringLiteral("0"),
+                        row.quality, csvEscape(row.warning));
+    }
+
+    // サマリー (分析パラメータと有声率)
+    out += QStringLiteral("summary,total_frames,,%1,,1,,\n")
+               .arg(QString::number(qulonglong(r.totalFrameCount)));
+    out += QStringLiteral("summary,voiced_frames,,%1,,1,,\n")
+               .arg(QString::number(qulonglong(r.voicedFrameCount)));
+    out += QStringLiteral("summary,voiced_ratio,,%1,,1,,\n")
+               .arg(QString::number(r.voicedRatio, 'f', 3));
+    out += QStringLiteral("summary,frame_length,,%1,s,1,,\n")
+               .arg(QString::number(r.frameSeconds, 'f', 4));
+    out += QStringLiteral("summary,hop,,%1,s,1,,\n")
+               .arg(QString::number(r.hopSeconds, 'f', 4));
+    out += QStringLiteral("summary,f0_search_min,,%1,Hz,1,,\n")
+               .arg(QString::number(r.f0SearchMinHz, 'f', 1));
+    out += QStringLiteral("summary,f0_search_max,,%1,Hz,1,,\n")
+               .arg(QString::number(r.f0SearchMaxHz, 'f', 1));
+    out += QStringLiteral("summary,overall_quality,,%1,,1,%1,\n")
+               .arg(qualityToken(r.overallQuality));
+
+    // 倍音レベル (H1 相対)
+    for (int i = 0; i < int(r.harmonicLevelsDb.size()); ++i) {
+        const MetricValue &h = r.harmonicLevelsDb[std::size_t(i)];
+        out += QStringLiteral("harmonics,H%1,,%2,dB re H1,%3,%4,%5\n")
+                   .arg(QString::number(i + 1),
+                        h.valid ? QString::number(h.value, 'f', 1) : QString(),
+                        h.valid ? QStringLiteral("1") : QStringLiteral("0"),
+                        qualityToken(h.quality),
+                        csvEscape(QString::fromStdString(h.warning)));
+    }
+
+    // F0 軌跡 (無声フレームは f0 空欄)
+    out += QStringLiteral("section,time_s,f0_hz,voiced,rms_dbfs,,,\n");
+    for (const F0Frame &f : r.f0Track) {
+        out += QStringLiteral("f0_track,%1,%2,%3,%4,,,\n")
+                   .arg(QString::number(f.timeSeconds, 'f', 4),
+                        f.voiced ? QString::number(f.f0Hz, 'f', 2) : QString(),
+                        f.voiced ? QStringLiteral("1") : QStringLiteral("0"),
+                        QString::number(f.rmsDbfs, 'f', 1));
+    }
+
+    for (const std::string &w : r.warnings)
+        out += QStringLiteral("warnings,,,,,,,%1\n")
+                   .arg(csvEscape(QString::fromStdString(w)));
+    return out;
+}
+
+QString AcousticResultModel::toJson(const VocalAnalysisResult &r)
+{
+    QJsonObject root;
+    root["overall_quality"] = qualityToken(r.overallQuality);
+
+    root["analysis"] = QJsonObject{
+        { "frame_s", r.frameSeconds },
+        { "hop_s", r.hopSeconds },
+        { "f0_search_min_hz", r.f0SearchMinHz },
+        { "f0_search_max_hz", r.f0SearchMaxHz },
+        { "total_frames", double(r.totalFrameCount) },
+        { "voiced_frames", double(r.voicedFrameCount) },
+        { "voiced_ratio", r.voicedRatio } };
+
+    root["f0"] = QJsonObject{
+        { "median_hz", metricJson(r.f0MedianHz) },
+        { "mean_hz", metricJson(r.f0MeanHz) },
+        { "min_hz", metricJson(r.f0MinHz) },
+        { "max_hz", metricJson(r.f0MaxHz) },
+        { "stability_cents", metricJson(r.pitchStabilityCents) } };
+
+    root["vibrato"] = QJsonObject{
+        { "valid", r.vibrato.valid },
+        { "rate_hz", metricJson(r.vibrato.rateHz) },
+        { "depth_cents", metricJson(r.vibrato.depthCents) },
+        { "warning", QString::fromStdString(r.vibrato.warning) } };
+
+    root["hnr_db"] = metricJson(r.hnrDb);
+    root["spectral_centroid_hz"] = metricJson(r.spectralCentroidHz);
+    root["singer_formant_ratio_db"] = metricJson(r.singerFormantRatioDb);
+
+    QJsonArray harmonics;
+    for (const MetricValue &h : r.harmonicLevelsDb)
+        harmonics.append(metricJson(h));
+    root["harmonic_levels_db_re_h1"] = harmonics;
+
+    QJsonArray bands;
+    for (const BandEnergyValue &b : r.bandEnergies) {
+        bands.append(QJsonObject{
+            { "band", bandLabel(b.band) },
+            { "center_hz", b.band.centerHz },
+            { "level_db", metricJson(b.levelDb) } });
+    }
+    root["band_energies"] = bands;
+
+    root["levels"] = QJsonObject{
+        { "peak_dbfs", metricJson(r.peakDbfs) },
+        { "rms_dbfs", metricJson(r.rmsDbfs) },
+        { "leq_dbfs", metricJson(r.leqDbfs) },
+        { "leq_spl_db", metricJson(r.leqSplDb) },
+        { "peak_spl_db", metricJson(r.peakSplDb) } };
+
+    QJsonArray track;
+    for (const F0Frame &f : r.f0Track) {
+        track.append(QJsonObject{
+            { "time_s", f.timeSeconds },
+            { "f0_hz", f.voiced ? f.f0Hz : QJsonValue() },
+            { "voiced", f.voiced },
+            { "rms_dbfs", f.rmsDbfs } });
+    }
+    root["f0_track"] = track;
+
+    QJsonObject ltas;
+    ltas["valid"] = r.ltas.valid;
+    ltas["frame_count"] = double(r.ltas.frameCount);
+    ltas["warning"] = QString::fromStdString(r.ltas.warning);
+    QJsonArray freqs, levels;
+    for (double f : r.ltas.frequenciesHz) freqs.append(f);
+    for (double l : r.ltas.levelsDb) levels.append(l);
+    ltas["frequencies_hz"] = freqs;
+    ltas["levels_db"] = levels;
+    root["ltas"] = ltas;
+
+    QJsonArray warnings;
+    for (const std::string &w : r.warnings)
+        warnings.append(QString::fromStdString(w));
+    root["warnings"] = warnings;
+
+    return QString::fromUtf8(
+        QJsonDocument(root).toJson(QJsonDocument::Indented));
+}

@@ -125,6 +125,17 @@ struct OperaAcousticSettings {
     bool    noiseCorrection = true;
     double  minimumDynamicRangeDb = 35.0;
     int     channelMode = 2;      // 0=L 1=R 2=平均モノ
+
+    // 可聴化 (AuralizationTab, .ofdx "opera_analysis/auralization")
+    QString auralizationDryFile;      // ドライ (無響/近接) 歌唱 WAV
+    QString auralizationOutputFile;   // ウェット出力 WAV
+    int     auralizationGainMode = 0; // 0=そのまま 1=推奨ゲイン適用 (自動正規化なし)
+
+    // 歌声分析 (VocalAnalysisTab, .ofdx "opera_analysis/vocal")
+    // 0 = 声種 (voiceType) プリセットの探索範囲を使う。> 0 で上書き。
+    // 校正状態は既存 calibrationState を再利用する (Absolute 時のみ SPL 有効)。
+    double  vocalF0MinHz = 0.0;
+    double  vocalF0MaxHz = 0.0;
 };
 
 // ── 水中音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────

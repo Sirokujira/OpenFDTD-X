@@ -556,7 +556,17 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"channel_mode", oa.channelMode},
             {"analysis_settings", QJsonObject{
                 {"noise_correction", oa.noiseCorrection},
-                {"minimum_dynamic_range_db", oa.minimumDynamicRangeDb} }} };
+                {"minimum_dynamic_range_db", oa.minimumDynamicRangeDb} }},
+            // 可聴化 (フェーズ4) — ネスト追加のみ (docs §2.1)。RIR は
+            // rir_file を共用する (単一ソース原則)。分析結果は保存しない。
+            {"auralization", QJsonObject{
+                {"dry_file", oa.auralizationDryFile},
+                {"output_file", oa.auralizationOutputFile},
+                {"gain_mode", oa.auralizationGainMode} }},
+            // 歌声分析 (フェーズ3) — F0 探索範囲の上書き (0 = 声種プリセット)
+            {"vocal", QJsonObject{
+                {"f0_min_hz", oa.vocalF0MinHz},
+                {"f0_max_hz", oa.vocalF0MaxHz} }} };
         root["acoustic"] = ac;
     }
     {
@@ -703,6 +713,17 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             s.minimumDynamicRangeDb =
                 as.value("minimum_dynamic_range_db")
                     .toDouble(s.minimumDynamicRangeDb);
+            // 可聴化 / 歌声分析 — 欠落キーは既定値のまま (旧ファイル互換)
+            const QJsonObject au = oa["auralization"].toObject();
+            s.auralizationDryFile =
+                au.value("dry_file").toString(s.auralizationDryFile);
+            s.auralizationOutputFile =
+                au.value("output_file").toString(s.auralizationOutputFile);
+            s.auralizationGainMode =
+                au.value("gain_mode").toInt(s.auralizationGainMode);
+            const QJsonObject vo = oa["vocal"].toObject();
+            s.vocalF0MinHz = vo.value("f0_min_hz").toDouble(s.vocalF0MinHz);
+            s.vocalF0MaxHz = vo.value("f0_max_hz").toDouble(s.vocalF0MaxHz);
         }
     }
     if (root.contains("underwater")) {
