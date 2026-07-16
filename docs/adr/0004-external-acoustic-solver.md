@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted (2026-07-16) — 設計のみ (フェーズ5 で実装)。
+Accepted (2026-07-16)。フェーズ5 で実装済み — 実装レベルの具体化
+(出力契約の確定・AcousticBackend 5 値・モック戦略) は
+`docs/adr/0007-acoustic-solver-contract.md` を参照。本 ADR の
+Decision 2 の enum 案 ({ None, ExternalSolver }) は ADR-0007 の
+5 値 enum で置き換えられた。
 
 ## Context
 

@@ -163,6 +163,9 @@ set_target_properties(openfdtd_x PROPERTIES
 add_library(ofdx_acoustic_core STATIC
     src/acoustics/core/AcousticMetrics.cpp
     src/acoustics/core/BandFilter.cpp
+    src/acoustics/core/ConvolutionEngine.cpp
+    src/acoustics/core/Fft.cpp
+    src/acoustics/core/VocalAnalyzer.cpp
     src/acoustics/core/DirectSoundDetector.cpp
     src/acoustics/core/NoiseFloorEstimator.cpp
     src/acoustics/core/ReflectionDetector.cpp
@@ -224,9 +227,12 @@ if(BUILD_TESTS)
     # C++ 単体テスト (各 tests/acoustics/test_*.cpp → 個別実行ファイル)
     set(OFDX_ACOUSTIC_TESTS
         clarity
+        convolution
         direct_sound
+        fft
         reflections
         reverberation
+        vocal
         schroeder
         wav
     )
