@@ -16,7 +16,10 @@ using namespace ofd::acoustics;
 namespace {
 
 std::string tempPath(const char *name) {
+    // TMPDIR (POSIX/CI) → TEMP/TMP (Windows) → /tmp の順で解決する
     const char *dir = std::getenv("TMPDIR");
+    if (dir == nullptr || dir[0] == '\0') dir = std::getenv("TEMP");
+    if (dir == nullptr || dir[0] == '\0') dir = std::getenv("TMP");
     if (dir == nullptr || dir[0] == '\0') dir = "/tmp";
     return std::string(dir) + "/" + name;
 }
