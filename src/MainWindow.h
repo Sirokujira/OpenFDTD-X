@@ -90,6 +90,10 @@ private:
     Project *m_project = nullptr;
     Runner  *m_runner  = nullptr;
 
+    // ONN 光活性化: カーネルログ "ONN: A_eff = ... [m^2]" から抽出した
+    // 実効断面積 (解析解の重ね描き用)。実行開始時に 0 へリセット。
+    double   m_lastAeff_m2 = 0.0;
+
     DomainBar      *m_domainBar = nullptr;
     QTabWidget     *m_leftTabs = nullptr;
     RightDock      *m_rightDock = nullptr;

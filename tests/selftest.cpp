@@ -12,6 +12,7 @@
 #include <cstdio>
 
 #include "core/Project.h"
+#include "io/ActivationCurve.h"
 #include "io/OfdIO.h"
 #include "io/StlImporter.h"
 #include "io/Voxelizer.h"
@@ -184,6 +185,17 @@ static void compareProjects(const Project &a, const Project &b)
     check(pa.near2d.size() == pb.near2d.size(), "plotnear2d count");
     check(pa.far1dDb == pb.far1dDb, "far1ddb");
     check(a.extraLines() == b.extraLines(), "extra lines round-trip");
+
+    // ONN 光活性化 (tpa / powersweep) — .ofd キーの往復
+    const OpticalOpts &oa = a.optical(), &ob = b.optical();
+    check(oa.tpaEnabled == ob.tpaEnabled &&
+          oa.tpaMaterialId == ob.tpaMaterialId &&
+          nearlyEq(oa.tpaBeta_cmGW, ob.tpaBeta_cmGW), "tpa round-trip");
+    check(oa.powerSweepEnabled == ob.powerSweepEnabled &&
+          nearlyEq(oa.psPmin_W, ob.psPmin_W) &&
+          nearlyEq(oa.psPmax_W, ob.psPmax_W) &&
+          oa.psPoints == ob.psPoints && oa.psLog == ob.psLog,
+          "powersweep round-trip");
 }
 
 
@@ -467,6 +479,157 @@ static void testOperaAcousticSettings()
     }
 }
 
+// ONN 光活性化関数 (TPA / powersweep) — .ofd/.ofdx 永続化 + CSV パーサ。
+// 出典: Honda, Shoji, Amemiya, Opt. Lett. 49, 5811 (2024).
+static void testOnnActivation()
+{
+    g_file = "onn";
+
+    // 1) 既定値 (無効): .ofd 出力に tpa/powersweep が現れず、
+    //    有効化→無効化で従来出力とバイト一致 (後方互換)
+    {
+        Project p;
+        const QString base = OfdIO::serialize(p);
+        check(!base.contains("tpa"), "onn: no tpa line by default");
+        check(!base.contains("powersweep"), "onn: no powersweep by default");
+
+        OpticalOpts &o = p.optical();
+        o.tpaEnabled = true;
+        o.powerSweepEnabled = true;
+        const QString on = OfdIO::serialize(p);
+        check(on.contains("\ntpa = 2 424\n"), "onn: tpa line emitted");
+        check(on.contains("\npowersweep = 0.001 10 41 log\n"),
+              "onn: powersweep line emitted");
+
+        o.tpaEnabled = false;
+        o.powerSweepEnabled = false;
+        check(OfdIO::serialize(p) == base,
+              "onn: disabled output byte-identical to legacy");
+    }
+
+    // 2) .ofd 往復: tpa/powersweep 行 → 構造 → 再シリアライズ
+    {
+        const QString text =
+            "OpenFDTD 4 2\n"
+            "tpa = 3 250.5\n"
+            "powersweep = 0.01 5 21 lin\n"
+            "end\n";
+        Project p;
+        QString err;
+        check(OfdIO::parse(text, p, &err), "onn: parse tpa/powersweep");
+        const OpticalOpts &o = p.optical();
+        check(o.tpaEnabled && o.tpaMaterialId == 3 &&
+              nearlyEq(o.tpaBeta_cmGW, 250.5), "onn: tpa parsed");
+        check(o.powerSweepEnabled && nearlyEq(o.psPmin_W, 0.01) &&
+              nearlyEq(o.psPmax_W, 5.0) && o.psPoints == 21 && !o.psLog,
+              "onn: powersweep parsed (lin)");
+        check(p.extraLines().isEmpty(),
+              "onn: tpa keys not duplicated into extraLines");
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\ntpa = 3 250.5\n") &&
+              out.contains("\npowersweep = 0.01 5 21 lin\n"),
+              "onn: reserialize keeps tpa/powersweep");
+    }
+
+    // 3) .ofdx 往復 + 既存 optical キーが保存されること
+    {
+        Project p1;
+        OpticalOpts &o = p1.optical();
+        o.solver = OpticalSolver::BPM;
+        o.tpaEnabled = true;
+        o.tpaMaterialId = 4;
+        o.tpaBeta_cmGW = 500.0;
+        o.powerSweepEnabled = true;
+        o.psPmin_W = 0.002;
+        o.psPmax_W = 20.0;
+        o.psPoints = 33;
+        o.psLog = false;
+
+        QTemporaryFile ofdx;
+        ofdx.setFileTemplate(QDir::tempPath() + "/ofdx_onn_XXXXXX.ofdx");
+        if (ofdx.open()) {
+            check(OfdxIO::save(ofdx.fileName(), p1), "onn ofdx save");
+            Project p2;
+            check(OfdxIO::load(ofdx.fileName(), p2), "onn ofdx load");
+            const OpticalOpts &q = p2.optical();
+            check(q.tpaEnabled && q.tpaMaterialId == 4 &&
+                  nearlyEq(q.tpaBeta_cmGW, 500.0), "onn ofdx tpa round-trip");
+            check(q.powerSweepEnabled && nearlyEq(q.psPmin_W, 0.002) &&
+                  nearlyEq(q.psPmax_W, 20.0) && q.psPoints == 33 && !q.psLog,
+                  "onn ofdx powersweep round-trip");
+
+            QFile jf(ofdx.fileName());
+            check(jf.open(QIODevice::ReadOnly), "onn ofdx reopen");
+            const QJsonObject root =
+                QJsonDocument::fromJson(jf.readAll()).object();
+            const QJsonObject opt = root.value("optical").toObject();
+            check(opt.contains("solver") && opt.contains("mode") &&
+                  opt.contains("wavelength") && opt.contains("rcwa") &&
+                  opt.contains("bpm") && opt.contains("fmm") &&
+                  opt.contains("bpf") && opt.contains("ring"),
+                  "onn json keeps existing optical keys");
+            check(opt.value("tpa").toObject().value("beta_cm_gw")
+                      .toDouble() == 500.0, "onn json tpa key");
+            check(opt.value("powersweep").toObject().value("scale")
+                      .toString() == "lin", "onn json powersweep key");
+        }
+    }
+
+    // 4) 旧 .ofdx (tpa/powersweep 無し): 既定値のまま (旧ファイル互換)
+    {
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_onn_old_XXXXXX.ofdx");
+        if (old.open()) {
+            const QByteArray legacy =
+                "{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                "  \"optical\": { \"solver\": 2 } }";
+            old.write(legacy);
+            old.flush();
+            Project p;
+            check(OfdxIO::load(old.fileName(), p), "onn legacy ofdx load");
+            const OpticalOpts &q = p.optical();
+            check(!q.tpaEnabled && q.tpaMaterialId == 2 &&
+                  q.tpaBeta_cmGW == 424.0,
+                  "onn legacy ofdx leaves tpa defaults");
+            check(!q.powerSweepEnabled && q.psPmin_W == 0.001 &&
+                  q.psPmax_W == 10.0 && q.psPoints == 41 && q.psLog,
+                  "onn legacy ofdx leaves powersweep defaults");
+        }
+    }
+
+    // 5) activation_curve.csv パーサ
+    {
+        const QString csv =
+            "P_in_W,P_out_W,transmission\n"
+            "0.001,0.000999,0.999\n"
+            "\n"
+            "# comment line\n"
+            "10,3.2,0.32\n";
+        QVector<ActivationPoint> pts;
+        QString err;
+        check(ActivationCurve::parse(csv, pts, &err), "onn csv parse ok");
+        check(pts.size() == 2, "onn csv row count");
+        check(nearlyEq(pts[0].pin, 0.001) && nearlyEq(pts[0].pout, 0.000999) &&
+              nearlyEq(pts[0].T, 0.999), "onn csv first row");
+        check(nearlyEq(pts[1].pin, 10.0) && nearlyEq(pts[1].T, 0.32),
+              "onn csv last row");
+        check(!ActivationCurve::parse("P_in_W,P_out_W,transmission\n",
+                                      pts, &err),
+              "onn csv header-only fails");
+        check(!ActivationCurve::load(QDir::tempPath() +
+                  "/ofdx_no_such_dir/activation_curve.csv", pts),
+              "onn csv missing file fails");
+
+        // カーネルログからの A_eff 抽出
+        check(nearlyEq(ActivationCurve::aeffFromLogLine(
+                  "ONN: A_eff = 2.5e-13 [m^2]"), 2.5e-13),
+              "onn aeff extracted from log");
+        check(ActivationCurve::aeffFromLogLine(
+                  "ONN: P_in=1 -> P_out=0.5 (T=0.5)") == 0.0,
+              "onn non-aeff log line ignored");
+    }
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -524,6 +687,7 @@ int main(int argc, char *argv[])
     testGlassCatalog();
     testRoomAcoustics();
     testOperaAcousticSettings();
+    testOnnActivation();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

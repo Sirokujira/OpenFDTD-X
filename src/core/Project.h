@@ -76,6 +76,20 @@ struct OpticalOpts {
     // Ring
     double  ringRadius_um = 5.0;
     double  ringGap_nm = 200.0;
+
+    // ── 非線形 (TPA) / ONN 光活性化関数 ──
+    // Honda, Shoji, Amemiya, "Optical activation function using a metamaterial
+    // waveguide for an all-optical neural network," Opt. Lett. 49, 5811 (2024).
+    // メタマテリアル装荷 Si 導波路の二光子吸収 (β=424 cm/GW) による飽和型
+    // (ReLU 相当) 活性化。カーネル入力キー: tpa / powersweep (OpenBPM)。
+    bool    tpaEnabled = false;
+    int     tpaMaterialId = 2;       // TPA を適用する材料 ID
+    double  tpaBeta_cmGW = 424.0;    // TPA 係数 β [cm/GW] (論文値)
+    bool    powerSweepEnabled = false;
+    double  psPmin_W = 0.001;        // 掃引下限 P_in [W]
+    double  psPmax_W = 10.0;         // 掃引上限 P_in [W]
+    int     psPoints = 41;           // 掃引点数 (≥1)
+    bool    psLog = true;            // true=log 間隔, false=lin 間隔
 };
 
 // ── 室内音響ドメイン拡張 (.ofdx) ────────────────────────────────────────────

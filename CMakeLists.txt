@@ -50,6 +50,8 @@ set(CORE_SOURCES
 
     src/io/OfdIO.cpp
     src/io/OfdIO.h
+    src/io/ActivationCurve.cpp
+    src/io/ActivationCurve.h
     src/io/Touchstone.cpp
     src/io/Touchstone.h
     src/io/Tidy3dExporter.cpp

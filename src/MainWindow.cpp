@@ -5,6 +5,7 @@
 #include "I18n.h"
 
 #include "core/Project.h"
+#include "io/ActivationCurve.h"
 #include "io/H5Writer.h"
 #include "io/Tidy3dExporter.h"
 #include "io/Touchstone.h"
@@ -464,6 +465,7 @@ void MainWindow::runSimulation()
         return;
     }
     m_plotPanel->clearConvergence();
+    m_lastAeff_m2 = 0.0;
     m_sbProgress->setVisible(true);
     m_sbProgress->setValue(0);
     m_sbState->setText("● " + I18n::tr("sb_running"));
@@ -575,10 +577,18 @@ void MainWindow::onRunnerLog(const QString &line)
         m_plotPanel->addConvergencePoint(m.captured(1).toInt(),
                                          m.captured(2).toDouble(),
                                          m.captured(3).toDouble());
+    // ONN パワースイープ: obpm が出す実効断面積を控えておく (解析解用)
+    const double aeff = ActivationCurve::aeffFromLogLine(line);
+    if (aeff > 0) m_lastAeff_m2 = aeff;
 }
 
 void MainWindow::onRunnerFinished(bool ok)
 {
     m_sbProgress->setVisible(false);
     m_sbState->setText("● " + (ok ? I18n::tr("sb_done") : I18n::tr("sb_failed")));
+    // obpm 実行後: 作業ディレクトリに activation_curve.csv があれば
+    // 光タブに ONN 活性化カーブを表示する (無ければ何もしない)。
+    if (ok)
+        m_tabOptical->showActivationResult(m_runner->workingDir(),
+                                           m_lastAeff_m2);
 }

@@ -207,6 +207,16 @@ QString OfdIO::serialize(const Project &p)
                 << " " << num(po.near2dVzoom[1]) << "\n";
     }
 
+    // ── 非線形 (TPA) / ONN 活性化キー (OpenBPM: tpa+powersweep, OpenFDTD:
+    // tpa)。無効時は一切出力しない (従来ファイルとバイト一致 = 後方互換)。
+    const OpticalOpts &oo = p.optical();
+    if (oo.tpaEnabled)
+        out << "tpa = " << oo.tpaMaterialId << " "
+            << num(oo.tpaBeta_cmGW) << "\n";
+    if (oo.powerSweepEnabled)
+        out << "powersweep = " << num(oo.psPmin_W) << " " << num(oo.psPmax_W)
+            << " " << oo.psPoints << " " << (oo.psLog ? "log" : "lin") << "\n";
+
     // keys the GUI doesn't model — preserved from the loaded file
     for (const QString &line : p.extraLines())
         out << line << "\n";
@@ -475,6 +485,22 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
             po.near2dVzoom[0] = qMin(d(2), d(3));
             po.near2dVzoom[1] = qMax(d(2), d(3));
         }
+        // ── 非線形 (TPA) / ONN 活性化キー ───────────────────────────────
+        else if (key == "tpa" && t.size() >= 2) {
+            OpticalOpts &o = project.optical();
+            o.tpaEnabled = true;
+            o.tpaMaterialId = n(0);
+            o.tpaBeta_cmGW = d(1);
+        }
+        else if (key == "powersweep" && t.size() >= 3) {
+            OpticalOpts &o = project.optical();
+            o.powerSweepEnabled = true;
+            o.psPmin_W = d(0);
+            o.psPmax_W = d(1);
+            o.psPoints = n(2);
+            if (t.size() >= 4)
+                o.psLog = (t[3].compare("lin", Qt::CaseInsensitive) != 0);
+        }
         else {
             // unknown key — keep verbatim for round-trip safety
             project.extraLines().push_back(line);
@@ -515,6 +541,18 @@ bool OfdxIO::save(const QString &path, const Project &p, QString *err)
             {"band_nm", QJsonArray{ o.bpfBandMin, o.bpfBandMax }}, {"Q", o.bpfQ} };
         opt["ring"] = QJsonObject{
             {"radius_um", o.ringRadius_um}, {"gap_nm", o.ringGap_nm} };
+        // 非線形 (TPA) / ONN 活性化 (Opt. Lett. 49, 5811 (2024)) — 追加キー
+        // のみ。既存キーの改名・削除・順序変更は後方互換のため禁止。
+        opt["tpa"] = QJsonObject{
+            {"enabled", o.tpaEnabled},
+            {"material_id", o.tpaMaterialId},
+            {"beta_cm_gw", o.tpaBeta_cmGW} };
+        opt["powersweep"] = QJsonObject{
+            {"enabled", o.powerSweepEnabled},
+            {"pmin_w", o.psPmin_W},
+            {"pmax_w", o.psPmax_W},
+            {"points", o.psPoints},
+            {"scale", o.psLog ? QStringLiteral("log") : QStringLiteral("lin")} };
         root["optical"] = opt;
     }
     {
@@ -650,6 +688,18 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         const QJsonObject ring = opt["ring"].toObject();
         o.ringRadius_um = ring.value("radius_um").toDouble(o.ringRadius_um);
         o.ringGap_nm = ring.value("gap_nm").toDouble(o.ringGap_nm);
+        // 非線形 (TPA) / ONN 活性化 — 欠落キーは既定値のまま (旧ファイル互換)
+        const QJsonObject tpa = opt["tpa"].toObject();
+        o.tpaEnabled = tpa.value("enabled").toBool(o.tpaEnabled);
+        o.tpaMaterialId = tpa.value("material_id").toInt(o.tpaMaterialId);
+        o.tpaBeta_cmGW = tpa.value("beta_cm_gw").toDouble(o.tpaBeta_cmGW);
+        const QJsonObject ps = opt["powersweep"].toObject();
+        o.powerSweepEnabled = ps.value("enabled").toBool(o.powerSweepEnabled);
+        o.psPmin_W = ps.value("pmin_w").toDouble(o.psPmin_W);
+        o.psPmax_W = ps.value("pmax_w").toDouble(o.psPmax_W);
+        o.psPoints = ps.value("points").toInt(o.psPoints);
+        if (ps.contains("scale"))
+            o.psLog = (ps.value("scale").toString() != QLatin1String("lin"));
     }
     if (root.contains("acoustic")) {
         const QJsonObject ac = root["acoustic"].toObject();

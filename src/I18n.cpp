@@ -274,6 +274,65 @@ void I18n::loadTables() {
         "RCWA は OpenRCWA (orcwa)、BPM は OpenBPM (obpm) のカーネルを実行します。",
         "RCWA runs the OpenRCWA kernel (orcwa); BPM runs OpenBPM (obpm).");
 
+    // 非線形 (TPA) / ONN 光活性化関数 (Opt. Lett. 49, 5811 (2024))
+    add("opt_tpa_section", "非線形 (TPA) / ONN 活性化",
+        "Nonlinear (TPA) / ONN activation");
+    add("opt_tpa_enable", "TPA (二光子吸収) を有効化",
+        "Enable TPA (two-photon absorption)");
+    add("opt_tpa_tip",
+        "メタマテリアル装荷 Si 導波路の二光子吸収による飽和型 (ReLU 相当) "
+        "光活性化関数。出典: Honda, Shoji, Amemiya, Opt. Lett. 49, 5811 (2024).",
+        "Saturating (ReLU-like) optical activation function via two-photon "
+        "absorption in a metamaterial-loaded Si waveguide. Ref: Honda, Shoji, "
+        "Amemiya, Opt. Lett. 49, 5811 (2024).");
+    add("opt_tpa_mat", "TPA 材料 ID", "TPA material ID");
+    add("opt_tpa_mat_tip",
+        "TPA を適用する材料の ID (material 行の並び順)。",
+        "ID of the material the TPA coefficient applies to.");
+    add("opt_tpa_beta", "β [cm/GW]", "β [cm/GW]");
+    add("opt_tpa_beta_tip",
+        "TPA 係数 β。既定値 424 cm/GW はメタマテリアル装荷 Si 導波路の実測値 "
+        "(Honda, Shoji, Amemiya, Opt. Lett. 49, 5811 (2024))。",
+        "TPA coefficient β. The default 424 cm/GW is the measured value for "
+        "the metamaterial-loaded Si waveguide (Honda, Shoji, Amemiya, "
+        "Opt. Lett. 49, 5811 (2024)).");
+    add("opt_ps_enable", "パワースイープ (活性化カーブ出力)",
+        "Power sweep (activation curve output)");
+    add("opt_ps_tip",
+        "入力パワー P_in を掃引し activation_curve.csv "
+        "(P_in, P_out, 透過率) を出力します。",
+        "Sweeps the input power P_in and writes activation_curve.csv "
+        "(P_in, P_out, transmission).");
+    add("opt_ps_pmin", "P_min [W]", "P_min [W]");
+    add("opt_ps_pmax", "P_max [W]", "P_max [W]");
+    add("opt_ps_points", "掃引点数", "Sweep points");
+    add("opt_ps_scale", "間隔", "Spacing");
+    add("opt_ps_log", "対数 (log)", "Logarithmic (log)");
+    add("opt_ps_lin", "線形 (lin)", "Linear (lin)");
+    add("opt_tpa_warn_beta", "β は正の値を入力してください (例: 424)。",
+        "β must be positive (e.g. 424).");
+    add("opt_ps_warn_range",
+        "パワー範囲は 0 < P_min ≤ P_max を満たしてください。",
+        "Power range must satisfy 0 < P_min ≤ P_max.");
+    add("opt_onn_section", "ONN 活性化カーブ (結果)",
+        "ONN activation curve (results)");
+    add("opt_onn_no_data",
+        "BPM ソルバーでパワースイープを実行すると activation_curve.csv "
+        "がここに表示されます。",
+        "Run the BPM solver with a power sweep to display "
+        "activation_curve.csv here.");
+    add("opt_onn_loaded", "activation_curve.csv を読み込みました (%1 点)。",
+        "Loaded activation_curve.csv (%1 points).");
+    add("opt_onn_parse_err", "activation_curve.csv の読み込みに失敗: %1",
+        "Failed to read activation_curve.csv: %1");
+    add("opt_onn_pin", "P_in [W]", "P_in [W]");
+    add("opt_onn_pout", "P_out [W]", "P_out [W]");
+    add("opt_onn_trans", "透過率 T", "Transmission T");
+    add("opt_onn_measured", "BPM 実測", "BPM computed");
+    add("opt_onn_analytic", "解析解 1/(1+βPL/A_eff)",
+        "Analytic 1/(1+βPL/A_eff)");
+    add("opt_onn_aeff", "A_eff = %1 m²", "A_eff = %1 m²");
+
     // Acoustic tab
     add("ac_metrics", "室内音響指標", "Room-acoustic metrics");
     add("ac_rt60", "残響時間 RT60", "Reverb time RT60");
