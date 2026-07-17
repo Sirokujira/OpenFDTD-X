@@ -65,11 +65,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Qt 6.5.x は qvarlengtharray.h が stdext::checked_array_iterator を
+      # 参照しており、VS2022 17.13 (MSVC 14.43) でこれが削除されたため
+      # windows-latest の現行ツールセットではコンパイル不能
+      # ("stdext is not a class or namespace name")。stdext 不使用の
+      # Qt 6.8 LTS (msvc2022) へ更新して根本解決する。
       - name: Install Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.5.3"
-          arch: win64_msvc2019_64
+          version: "6.8.*"
+          arch: win64_msvc2022_64
           cache: true
 
       - name: Configure

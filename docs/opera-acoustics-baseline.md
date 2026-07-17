@@ -64,7 +64,7 @@ QT_QPA_PLATFORM=offscreen ./build/openfdtd_x --help
   (`[file]`, `--lang`, `--domain`, `--screenshot`, `--left-tab`) を出力して終了。
 - 参考: CI (.github/workflows/ci.yml) はさらにオフスクリーンで
   `--domain optical/acoustic --screenshot` によるスクリーンショット生成を
-  スモークテストしている (Linux job)。Windows job は Qt 6.5.3 / MSVC で
+  スモークテストしている (Linux job)。Windows job は Qt 6.8 LTS / MSVC で
   ビルド + selftest。
 
 ## 5. 基準の運用ルール

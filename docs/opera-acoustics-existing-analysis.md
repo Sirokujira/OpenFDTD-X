@@ -314,7 +314,7 @@ NC タンジェント法の補間値、レポート出力、I18n。
    スクリーンショットスモーク (--domain acoustic) の見た目が変わる (機械判定は
    ファイル生成のみなので致命ではない)。
 6. **Qt バージョン下限**: README は Qt 6.2+、CI 実測は Linux 6.4.2 /
-   Windows 6.5.3。6.5 以降の API は使用不可。
+   Windows 6.8 LTS。下限は Linux の 6.4.2 — 6.5 以降の API は使用不可。
 7. **Runner**: 音響用の新カーネルを増やす場合は `Kernel` enum・binary prefix・
    HOME 環境変数の3点セット (Runner.cpp `kernelPrefix`/`resolveBinary`) を拡張
    する設計になっている。既存 enum 値の意味変更は RunConfig 経由の呼び出し元

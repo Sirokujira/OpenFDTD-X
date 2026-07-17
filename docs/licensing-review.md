@@ -31,7 +31,7 @@
 
 | 依存 | 必須/任意 | ライセンス | 備考 |
 |---|---|---|---|
-| Qt 6 Widgets | 必須 (6.2+) | LGPLv3 / GPLv2+ / 商用 | 動的リンク前提なら LGPLv3 で商用利用可。CI 実測 6.4.2 (Ubuntu apt) / 6.5.3 (jurplel/install-qt-action) |
+| Qt 6 Widgets | 必須 (6.2+) | LGPLv3 / GPLv2+ / 商用 | 動的リンク前提なら LGPLv3 で商用利用可。CI 実測 6.4.2 (Ubuntu apt) / 6.8 LTS (jurplel/install-qt-action) |
 | HDF5 | 任意 (USE_HDF5=OFF 既定) | BSD 系 (HDF5 License) | 既定ビルドでは不使用 |
 | libigl v2.5.0 | 任意 (USE_LIBIGL=OFF 既定) | MPL-2.0 (一部モジュール GPL) | FetchContent。既定ビルドでは不使用 |
 
