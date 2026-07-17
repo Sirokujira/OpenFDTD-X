@@ -43,6 +43,9 @@ class Post2Tab;
 class OpticalTab;
 class GlassCatalogTab;
 class RoomAcousticsTab;
+class RirAnalysisTab;
+class VocalAnalysisTab;
+class AuralizationTab;
 class AcousticTab;
 class UnderwaterTab;
 class Tidy3dTab;
@@ -87,6 +90,10 @@ private:
     Project *m_project = nullptr;
     Runner  *m_runner  = nullptr;
 
+    // ONN 光活性化: カーネルログ "ONN: A_eff = ... [m^2]" から抽出した
+    // 実効断面積 (解析解の重ね描き用)。実行開始時に 0 へリセット。
+    double   m_lastAeff_m2 = 0.0;
+
     DomainBar      *m_domainBar = nullptr;
     QTabWidget     *m_leftTabs = nullptr;
     RightDock      *m_rightDock = nullptr;
@@ -108,6 +115,9 @@ private:
     Tidy3dTab     *m_tabTidy3d = nullptr;
     GlassCatalogTab  *m_tabGlass = nullptr;
     RoomAcousticsTab *m_tabRoomAc = nullptr;
+    RirAnalysisTab   *m_tabRirAnalysis = nullptr;
+    VocalAnalysisTab *m_tabVocal = nullptr;
+    AuralizationTab  *m_tabAuralization = nullptr;
 
     QComboBox *m_engineBox = nullptr;
     QComboBox *m_modeBox = nullptr;

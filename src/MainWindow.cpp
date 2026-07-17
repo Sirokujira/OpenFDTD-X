@@ -5,6 +5,7 @@
 #include "I18n.h"
 
 #include "core/Project.h"
+#include "io/ActivationCurve.h"
 #include "io/H5Writer.h"
 #include "io/Tidy3dExporter.h"
 #include "io/Touchstone.h"
@@ -26,6 +27,9 @@
 #include "tabs/Tidy3dTab.h"
 #include "tabs/GlassCatalogTab.h"
 #include "tabs/RoomAcousticsTab.h"
+#include "tabs/RirAnalysisTab.h"
+#include "tabs/VocalAnalysisTab.h"
+#include "tabs/AuralizationTab.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -232,6 +236,9 @@ void MainWindow::buildCentral()
     m_tabTidy3d    = new Tidy3dTab(m_project);
     m_tabGlass     = new GlassCatalogTab(m_project);
     m_tabRoomAc    = new RoomAcousticsTab(m_project);
+    m_tabRirAnalysis = new RirAnalysisTab(m_project);
+    m_tabVocal     = new VocalAnalysisTab(m_project);
+    m_tabAuralization = new AuralizationTab(m_project);
 
     m_leftTabs->addTab(m_tabGeneral, I18n::tr("t_general"));
     m_leftTabs->addTab(m_tabMesh, I18n::tr("t_mesh"));
@@ -317,6 +324,9 @@ void MainWindow::onDomainChanged(Domain d)
     removeTab(m_tabTidy3d);
     removeTab(m_tabGlass);
     removeTab(m_tabRoomAc);
+    removeTab(m_tabRirAnalysis);
+    removeTab(m_tabVocal);
+    removeTab(m_tabAuralization);
 
     switch (d) {
     case Domain::Optical:
@@ -328,6 +338,9 @@ void MainWindow::onDomainChanged(Domain d)
     case Domain::Acoustic:
         m_leftTabs->addTab(m_tabAcoustic, I18n::tr("t_acoustic"));
         m_leftTabs->addTab(m_tabRoomAc, I18n::tr("t_roomac"));
+        m_leftTabs->addTab(m_tabRirAnalysis, I18n::tr("t_riranalysis"));
+        m_leftTabs->addTab(m_tabVocal, I18n::tr("t_vocalanalysis"));
+        m_leftTabs->addTab(m_tabAuralization, I18n::tr("t_auralization"));
         break;
     case Domain::Underwater:
         m_leftTabs->addTab(m_tabUnderwater, I18n::tr("t_underwater"));
@@ -452,6 +465,7 @@ void MainWindow::runSimulation()
         return;
     }
     m_plotPanel->clearConvergence();
+    m_lastAeff_m2 = 0.0;
     m_sbProgress->setVisible(true);
     m_sbProgress->setValue(0);
     m_sbState->setText("● " + I18n::tr("sb_running"));
@@ -563,10 +577,18 @@ void MainWindow::onRunnerLog(const QString &line)
         m_plotPanel->addConvergencePoint(m.captured(1).toInt(),
                                          m.captured(2).toDouble(),
                                          m.captured(3).toDouble());
+    // ONN パワースイープ: obpm が出す実効断面積を控えておく (解析解用)
+    const double aeff = ActivationCurve::aeffFromLogLine(line);
+    if (aeff > 0) m_lastAeff_m2 = aeff;
 }
 
 void MainWindow::onRunnerFinished(bool ok)
 {
     m_sbProgress->setVisible(false);
     m_sbState->setText("● " + (ok ? I18n::tr("sb_done") : I18n::tr("sb_failed")));
+    // obpm 実行後: 作業ディレクトリに activation_curve.csv があれば
+    // 光タブに ONN 活性化カーブを表示する (無ければ何もしない)。
+    if (ok)
+        m_tabOptical->showActivationResult(m_runner->workingDir(),
+                                           m_lastAeff_m2);
 }
