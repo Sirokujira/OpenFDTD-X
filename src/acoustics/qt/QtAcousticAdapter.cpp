@@ -40,6 +40,36 @@ double effectiveCalibrationOffsetDb(const OperaAcousticSettings &s)
                : 0.0;
 }
 
+// QFile を核パーサへ渡す逐次供給源 (負債 #6)。非 ASCII パスは QFile が
+// 解決し、読み出しはブロック単位なのでファイル全体の複製を持たない。
+class QFileWavSource : public acoustics::WavByteSource
+{
+public:
+    explicit QFileWavSource(QFile &f) : m_f(f) {}
+    std::size_t read(unsigned char *dst, std::size_t maxLen) override
+    {
+        const qint64 got =
+            m_f.read(reinterpret_cast<char *>(dst),
+                     static_cast<qint64>(maxLen));
+        return (got > 0) ? static_cast<std::size_t>(got) : 0;
+    }
+    bool seek(unsigned long long absPos) override
+    {
+        return m_f.seek(static_cast<qint64>(absPos));
+    }
+    unsigned long long size() override
+    {
+        return static_cast<unsigned long long>(m_f.size());
+    }
+    std::string name() const override
+    {
+        return std::string(m_f.fileName().toUtf8().constData());
+    }
+
+private:
+    QFile &m_f;
+};
+
 } // namespace
 
 AcousticResult<AudioBuffer> QtAcousticAdapter::readWav(const QString &path)
@@ -47,16 +77,14 @@ AcousticResult<AudioBuffer> QtAcousticAdapter::readWav(const QString &path)
     if (path.trimmed().isEmpty())
         return AcousticResult<AudioBuffer>::error(
             AcousticErrorCode::InvalidArgument, "empty file path");
-    // 非 ASCII パスでもコアに届くよう、Qt 側で読み込んでメモリ経由で渡す
+    // 非 ASCII パスでもコアに届くよう QFile で開き、逐次読みで核パーサへ渡す
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly))
         return AcousticResult<AudioBuffer>::error(
             AcousticErrorCode::FileNotFound,
             std::string("cannot open: ") + path.toUtf8().constData());
-    const QByteArray data = f.readAll();
-    return readWavFromMemory(
-        reinterpret_cast<const unsigned char *>(data.constData()),
-        static_cast<std::size_t>(data.size()));
+    QFileWavSource src(f);
+    return readWavFromSource(src);
 }
 
 std::vector<double> QtAcousticAdapter::selectChannel(const AudioBuffer &buffer,
