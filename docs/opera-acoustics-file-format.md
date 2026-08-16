@@ -14,8 +14,8 @@
   **"1.1"** と定義する ("1.0" = opera_analysis なし)。読み込み側は
   schemaVersion で分岐**しない** (キーの有無だけで判定する) ため、
   1.0 リーダーが 1.1 ファイルを読んでも未知キー無視で壊れない。
-  注: 現行実装の save はまだ "1.0" を書き出しており、"1.1" への更新は
-  フェーズ2 の残作業 (`docs/opera-acoustics-development-status.md` §3)。
+  save は "1.1" を書き出す (2026-08-16 実装 — 負債 #2 解消。serialize は
+  `opera_analysis` を常に書くので常に "1.1")。
 
 ## 2. `acoustic.opera_analysis` キー一覧 (schemaVersion 1.1)
 

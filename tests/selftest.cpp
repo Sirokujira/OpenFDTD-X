@@ -2153,6 +2153,51 @@ static void testOperaAcousticSettings()
                   "missing calibration_offset_db defaults to 0.0");
         }
     }
+
+    // 5) schemaVersion (負債 #2): "1.1" = opera_analysis を含む書式。
+    //    serialize は opera_analysis を常に書くので常に "1.1" を書く。
+    {
+        const QJsonObject root =
+            QJsonDocument::fromJson(OfdxIO::serialize(Project())).object();
+        check(root.value("schemaVersion").toString() == "1.1",
+              "schemaVersion: save writes 1.1");
+        check(root.value("acoustic").toObject().contains("opera_analysis"),
+              "schemaVersion: 1.1 file indeed carries opera_analysis");
+
+        // 旧 "1.0" ファイルをロードしても再保存は "1.1" になる
+        // (既知キーは fresh が勝つ — ofdxExtra 差分に古い版が残らない)
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_ver_XXXXXX.ofdx");
+        if (old.open()) {
+            old.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                      "  \"future_key\": 42 }");
+            old.flush();
+            Project p6;
+            check(OfdxIO::load(old.fileName(), p6), "schemaVersion: 1.0 load");
+            const QJsonObject r2 =
+                QJsonDocument::fromJson(OfdxIO::serialize(p6)).object();
+            check(r2.value("schemaVersion").toString() == "1.1",
+                  "schemaVersion: resave upgrades 1.0 -> 1.1");
+            check(r2.value("future_key").toInt() == 42,
+                  "schemaVersion: unknown keys still preserved on upgrade");
+        }
+
+        // 未知の将来バージョンも読める範囲で読む (読み捨て — 分岐しない)
+        QTemporaryFile fut;
+        fut.setFileTemplate(QDir::tempPath() + "/ofdx_fut_XXXXXX.ofdx");
+        if (fut.open()) {
+            fut.write("{ \"schemaVersion\": \"9.9\", \"domain\": \"acoustic\","
+                      "  \"acoustic\": { \"opera_analysis\": {"
+                      "      \"enabled\": true, \"band_mode\": 1 } } }");
+            fut.flush();
+            Project p7;
+            check(OfdxIO::load(fut.fileName(), p7),
+                  "schemaVersion: future version still loads");
+            check(p7.operaAcoustic().enabled
+                      && p7.operaAcoustic().bandMode == 1,
+                  "schemaVersion: future version keys still read");
+        }
+    }
 }
 
 // ── 音響テンプレートの吸音バジェット期待値 ────────────────────────────────
