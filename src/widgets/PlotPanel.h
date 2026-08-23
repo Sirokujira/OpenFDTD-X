@@ -93,6 +93,10 @@ private:
     QToolButton *m_btnWave = nullptr, *m_btnConv = nullptr,
                 *m_btnFreq = nullptr, *m_btnSmith = nullptr,
                 *m_btnFar = nullptr, *m_btnPost = nullptr;
+    // スミスチャートの目盛 (インピーダンス / アドミタンス / 両方 = イミッタンス)。
+    // 並列素子による整合はアドミタンス面の等 g 円に沿って動くので、Y 目盛が
+    // 無いと整合回路の検討ができない。既定は従来どおりインピーダンスのみ。
+    QComboBox   *m_smithGrid = nullptr;
     QComboBox   *m_tableSel = nullptr;   // PostLog モードの表選択
     QCheckBox   *m_logY = nullptr;       // PostLog モードの対数 Y 軸
     // 時間波形の表 (feed.log / point.log) をスペクトルで見るための一式。
