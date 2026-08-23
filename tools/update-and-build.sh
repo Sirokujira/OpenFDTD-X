@@ -22,6 +22,7 @@
 #   tools/update-and-build.sh --configs cpu      # CPU 版だけ
 #   tools/update-and-build.sh --no-pull --tests  # pull せずビルドしてテストまで
 #   tools/update-and-build.sh --clone            # 無いリポジトリは clone してくる
+#   tools/update-and-build.sh --setup-mpi        # MPI が無ければ導入する
 set -u
 
 # ── 既定値 ────────────────────────────────────────────────────────────────
@@ -34,6 +35,7 @@ DO_PULL=1
 DO_CLONE=0
 DO_CLEAN=0
 DO_TESTS=0
+DO_SETUP_MPI=0
 JOBS=""
 GIT_BASE="https://github.com/Sirokujira"
 
@@ -49,6 +51,8 @@ usage() {
   --clone           無いリポジトリを clone する
   --clean           ビルドディレクトリを消してから構成する
   --tests           ビルド後にテストを実行する
+  --setup-mpi       MPI が無ければ導入する (macOS は brew で実行、Linux は
+                    要 sudo なのでコマンドを表示するだけ)
   --jobs N          並列ビルド数 (既定: CPU 数)
   -h, --help        この使い方
 EOS
@@ -64,6 +68,7 @@ while [ $# -gt 0 ]; do
         --clone)   DO_CLONE=1; shift ;;
         --clean)   DO_CLEAN=1; shift ;;
         --tests)   DO_TESTS=1; shift ;;
+        --setup-mpi) DO_SETUP_MPI=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "不明なオプション: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -108,6 +113,34 @@ HAVE_CUDA=0; HAVE_MPI=0
 CUDA_REASON="nvcc が PATH にありません"
 MPI_REASON="mpiexec / mpirun が PATH にありません"
 command -v nvcc >/dev/null 2>&1 && { HAVE_CUDA=1; CUDA_REASON=$(nvcc --version | tail -1); }
+
+# --setup-mpi: MPI が無いときだけ導入を試みる。macOS の brew は sudo が要らない
+# ので実行するが、Linux のパッケージ管理は sudo が要るのでコマンドを出すに留める
+# (このスクリプトが勝手に sudo を走らせない)。
+if [ $DO_SETUP_MPI = 1 ] \
+   && ! command -v mpiexec >/dev/null 2>&1 && ! command -v mpirun >/dev/null 2>&1; then
+    case "$(uname -s)" in
+        Darwin)
+            if command -v brew >/dev/null 2>&1; then
+                echo "  MPI を導入します: brew install open-mpi"
+                brew install open-mpi || true
+                # OpenRCWA / OpenBPM の MPI 構成には並列 HDF5 も要る
+                brew list hdf5-mpi >/dev/null 2>&1 || brew install hdf5-mpi || true
+            else
+                echo "  Homebrew がありません。先に https://brew.sh を導入してください"
+            fi ;;
+        Linux)
+            echo "  MPI は sudo が要るのでこのスクリプトからは入れません。次を実行してください:"
+            if command -v apt-get >/dev/null 2>&1; then
+                echo "    sudo apt-get install -y libopenmpi-dev openmpi-bin libhdf5-openmpi-dev"
+            elif command -v dnf >/dev/null 2>&1; then
+                echo "    sudo dnf install -y openmpi-devel hdf5-openmpi-devel"
+            else
+                echo "    (お使いのディストリの openmpi 開発パッケージと並列 HDF5)"
+            fi ;;
+    esac
+fi
+
 if command -v mpiexec >/dev/null 2>&1 || command -v mpirun >/dev/null 2>&1; then
     HAVE_MPI=1; MPI_REASON=$( (command -v mpiexec || command -v mpirun) 2>/dev/null )
 fi
@@ -319,7 +352,7 @@ printf '%s\n' "$RESULTS" | while IFS='|' read -r st tgt note; do
     esac
 done
 [ $AUTO_CONFIGS = 1 ] && [ $HAVE_CUDA = 0 ] && warn "CUDA 版は作っていません ($CUDA_REASON)"
-[ $AUTO_CONFIGS = 1 ] && [ $HAVE_MPI  = 0 ] && warn "MPI 版は作っていません ($MPI_REASON)"
+[ $AUTO_CONFIGS = 1 ] && [ $HAVE_MPI  = 0 ] && warn "MPI 版は作っていません ($MPI_REASON。--setup-mpi で導入できます)"
 
 say ""
 say "GUI からカーネルを使うには、ツール > カーネルパスの設定… で各リポジトリを"

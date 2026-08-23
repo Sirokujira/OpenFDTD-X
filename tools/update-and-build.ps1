@@ -28,6 +28,7 @@ macOS / Linux は同じディレクトリの update-and-build.sh を使う。
   ... -Configs cpu          CPU 版だけ
   ... -NoPull -Tests        pull せずビルドしてテストまで
   ... -Clone                無いリポジトリは clone してくる
+  ... -SetupMpi             MS-MPI が無ければ管理者権限なしで用意する
 
 事前に必要なもの (無い構成は自動で飛ばす):
   Visual Studio 2022 Build Tools / CMake / Ninja
@@ -35,6 +36,8 @@ macOS / Linux は同じディレクトリの update-and-build.sh を使う。
   Qt         : $env:QT_ROOT か C:\Qt\<版>\msvc*_64
   CUDA       : $env:CUDA_PATH か PATH の nvcc
   MS-MPI     : $env:MSMPI_BIN か "C:\Program Files\Microsoft MPI\Bin"
+               (-SetupMpi を付けると conda-forge のパッケージを
+                %USERPROFILE%\tools\msmpi へ展開する。管理者権限も conda も不要)
   並列 HDF5  : $env:OFDX_HDF5_PARALLEL_DIR (OpenRCWA / OpenBPM の MPI 構成で必要)
 #>
 [CmdletBinding()]
@@ -47,7 +50,8 @@ param(
     [switch] $NoPull,
     [switch] $Clone,
     [switch] $Clean,
-    [switch] $Tests
+    [switch] $Tests,
+    [switch] $SetupMpi
 )
 
 $ErrorActionPreference = "Continue"
@@ -122,6 +126,58 @@ if ($env:CUDA_PATH -and (Test-Path "$env:CUDA_PATH\bin\nvcc.exe")) {
 }
 $nvcc     = Get-Command nvcc -ErrorAction SilentlyContinue
 $haveCuda = [bool]$nvcc
+
+# MS-MPI を管理者権限なしで用意する (-SetupMpi)。
+# 公式インストーラ (msmpisetup.exe) は管理者権限が要るが、conda-forge の同じ
+# バイナリを固めたパッケージは展開するだけで使える。SMPD をサービス登録しなく
+# ても、単一ノードなら mpiexec がローカルに smpd を起こして動く。
+# conda / python は不要 (Windows 10 1803 以降の tar.exe だけで展開できる)。
+function Install-MsMpi {
+    $dest = Join-Path $env:USERPROFILE "tools\msmpi"
+    if (Test-Path "$dest\Library\bin\mpiexec.exe") {
+        Write-Host "  MS-MPI は既に $dest にあります"
+        return "$dest\Library\bin"
+    }
+    # 実際に動作確認した版を固定で取る (版を上げるときは mpiexec と msmpi.dll の
+    # 組を揃えること。混ざるとランクの起動時に落ちる)
+    $url  = "https://conda.anaconda.org/conda-forge/win-64/msmpi-10.1.1-h3502643_7.tar.bz2"
+    $tmp  = Join-Path $env:TEMP "msmpi-10.1.1.tar.bz2"
+    Write-Host "  MS-MPI を取得します: $url"
+    try {
+        $old = $ProgressPreference; $ProgressPreference = "SilentlyContinue"
+        Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+        $ProgressPreference = $old
+    } catch {
+        Fail "MS-MPI の取得に失敗しました: $($_.Exception.Message)"
+        return $null
+    }
+    if (-not (Test-Path $tmp) -or (Get-Item $tmp).Length -lt 1MB) {
+        Fail "MS-MPI のダウンロードが不完全です: $tmp"
+        return $null
+    }
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    # Windows 同梱の bsdtar を絶対パスで呼ぶ。PATH に Git Bash の GNU tar が
+    # 先にいると "C:\..." をリモートホスト指定と解釈して
+    # "Cannot connect to C: resolve failed" で失敗する。
+    $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
+    if (-not (Test-Path $tarExe)) {
+        Fail "tar.exe が見つかりません (Windows 10 1803 以降が必要)"
+        return $null
+    }
+    & $tarExe -xf $tmp -C $dest
+    if (-not (Test-Path "$dest\Library\bin\mpiexec.exe")) {
+        Fail "MS-MPI の展開に失敗しました ($dest)"
+        return $null
+    }
+    Remove-Item $tmp -ErrorAction SilentlyContinue
+    Write-Host "  MS-MPI を $dest へ展開しました"
+    return "$dest\Library\bin"
+}
+
+if ($SetupMpi -and -not (Get-Command mpiexec -ErrorAction SilentlyContinue)) {
+    $b = Install-MsMpi
+    if ($b) { $env:MSMPI_BIN = $b }
+}
 
 # MS-MPI (mpiexec.exe の隣に msmpi.dll がある構成を想定)。インストーラ版と、
 # conda-forge のパッケージを展開しただけの構成の両方を見る。
@@ -422,7 +478,7 @@ foreach ($r in $results) {
     Write-Host ("  {0,-4} {1,-24} {2}" -f $r.状態, $r.対象, $r.備考) -ForegroundColor $color
 }
 if ($autoConfigs -and -not $haveCuda) { Warn "CUDA 版は作っていません (nvcc が見つかりません。CUDA_PATH を設定すると使えます)" }
-if ($autoConfigs -and -not $haveMpi)  { Warn "MPI 版は作っていません (mpiexec が見つかりません。MSMPI_BIN を設定すると使えます)" }
+if ($autoConfigs -and -not $haveMpi)  { Warn "MPI 版は作っていません (mpiexec が見つかりません。-SetupMpi を付けると用意します)" }
 
 Write-Host ""
 Write-Host "GUI からカーネルを使うには、ツール > カーネルパスの設定… で各リポジトリを"
