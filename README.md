@@ -40,12 +40,21 @@ MPI)。作らなかったものは黙って飛ばさず、最後の一覧に理�
 tools/update-and-build.sh                    # macOS / Linux
 tools/update-and-build.sh --configs cpu      # CPU 版だけ
 tools/update-and-build.sh --clone --tests    # 無いリポジトリは取得し、テストまで
+tools/update-and-build.sh --setup-mpi        # MPI が無ければ導入する
 ```
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\update-and-build.ps1
 ... -Configs cpu ; ... -Clone -Tests          # 同上
+... -SetupMpi                                 # MS-MPI を管理者権限なしで用意する
 ```
+
+`--setup-mpi` / `-SetupMpi` は MPI が無いときだけ動く。**Windows は管理者権限が
+要らない** — 公式インストーラの代わりに conda-forge の同じバイナリを
+`%USERPROFILE%\tools\msmpi` へ展開する (conda も Python も不要。Windows 同梱の
+`tar.exe` だけで済む)。SMPD をサービス登録しなくても、単一ノードなら `mpiexec` が
+ローカルに smpd を起こして動く。macOS は `brew install open-mpi hdf5-mpi` を実行し、
+Linux は sudo が要るのでコマンドを表示するだけにしている。
 
 Windows 版は後始末までやる — `windeployqt` で Qt の DLL とプラグインを実行ファイルの
 隣へ置き (これが無いと Explorer からのダブルクリックが `0xC0000135` で無言のまま
