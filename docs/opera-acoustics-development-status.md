@@ -26,8 +26,8 @@
 4. **selftest 拡張**: `opera_analysis` の .ofdx ラウンドトリップ
    チェック追加 (チェック総数が 1560 から増えるため baseline 文書の
    数値更新もセット)。
-5. **schemaVersion "1.1" 書き出し**: 現行 save は "1.0" のまま
-   (`docs/opera-acoustics-file-format.md` §1)。
+5. ~~**schemaVersion "1.1" 書き出し**~~ → **完了 (2026-08-16)**: save は
+   "1.1" を書く (`docs/opera-acoustics-file-format.md` §1、負債 #2)。
 6. ~~**calibration_offset_db の追加** (負債 #1)~~ → **完了**
    (`OperaAcousticSettings::calibrationOffsetDb` / `.ofdx`
    `calibration_offset_db` / `RirAnalysisTab` の入力欄 /
@@ -38,11 +38,11 @@
 | # | 内容 | 影響 | 対応方針 |
 |---|---|---|---|
 | 1 | ~~`calibrationOffsetDb` が `OperaAcousticSettings` / `.ofdx` / `QtAcousticAdapter::toAnalyzerConfig` に無い~~ **解消済み** | (解消前: GUI 経由で Absolute を選んでもオフセット 0 dB で絶対 SPL が dBFS のままだった) | **完了**: `OperaAcousticSettings::calibrationOffsetDb` (既定 0.0) + `.ofdx` `calibration_offset_db` (欠落時 0.0) + `RirAnalysisTab` の入力欄 (Absolute 時のみ有効) + `QtAcousticAdapter::toAnalyzerConfig` / `toVocalConfig` で **Absolute 以外は 0 を渡す**ゲート。selftest に往復 / 旧ファイル既定 / ゲート規則のチェックを追加 |
-| 2 | save が `schemaVersion: "1.0"` を書く | 1.1 ファイルの識別ができない (実害は小: 読み込みはキー有無判定) | フェーズ2 残作業 |
+| 2 | ~~save が `schemaVersion: "1.0"` を書く~~ **解消済み (2026-08-16)** | (解消前: 1.1 ファイルの識別ができなかった。実害は小: 読み込みはキー有無判定) | **完了**: serialize は `opera_analysis` を常に書くので常に "1.1" を書く (`docs/opera-acoustics-file-format.md` §1 の定義どおり)。読み込みは従来どおりバージョンで分岐しない (キー有無判定) — 旧 "1.0" ファイルはそのまま読め、再保存で "1.1" に上がる (既知キーは fresh が勝つので ofdxExtra に古い版は残らない)。selftest +6 checks (書き出し値 / 1.0→1.1 昇格 / 昇格時の未知キー保全 / 未知の将来バージョンも読める) |
 | 3 | ~~selftest に `opera_analysis` ラウンドトリップ未追加~~ **解消済み (2026-08-15)** | (解消前: 永続化の回帰をテストが検出しない) | **完了**: 実際には往復テスト (`testOperaAcousticSettings` §2) は既に存在しており、この記述は古かった。ただし**全 25 フィールド中 20 しか設定しておらず**、後から追加された ESS 掃引逆畳み込みの 5 フィールド (`sweepDeconvolve`/`sweepStartHz`/`sweepEndHz`/`sweepSec`/`sweepHarmonics`) が往復・旧ファイル既定値の両方から漏れていた (シリアライズ実装自体は正しかったことを確認)。構造体と代入群の突き合わせで検出し、往復 (+3 checks) と旧ファイル既定値 (+1 check) を追加して全 25 フィールドを網羅した |
 | 4 | ~~`.ofdx` の未知キーが保存時に消える (既知フィールド再構成方式)~~ **解消済み (2026-08-15)** | (解消前: 他ツールとの .ofdx 共有で相手のキーを失った) | **完了**: ADR-0003 案B を実装。ロード時に「ファイル − 再シリアライズ結果」の差分を `Project::ofdxExtra()` に保持し、save がマージして書き戻す。既知キーは常に新しい値が勝つ (差分方式なので stale 復活なし)。未知キーの無いファイルでは出力バイト不変。selftest 13 checks (往復逐語保全 / fresh 優先 / バイト不変 / 繰り返し安定)。詳細は ADR-0003 の Update 節 |
-| 5 | C API が広帯域 7 指標のみ (帯域別結果・反射リスト・warning 文字列・Early/Late は未公開) | 外部カーネルからの利用範囲が限定的 | 需要が出た時点で `struct_size`/`api_version` 拡張規約に従い追加 |
-| 6 | `QtAcousticAdapter::readWav` がファイル全体を QByteArray に読む | 巨大 WAV (長時間・高 fs) でメモリピーク | ストリーミング読みは必要になるまで保留 |
+| 5 | ~~C API が広帯域 7 指標のみ (帯域別結果・反射リスト・warning 文字列・Early/Late は未公開)~~ **解消済み (2026-08-16)** | (解消前: 外部カーネルからの利用範囲が限定的だった) | **完了**: `api_version` を 2 に上げた。(a) `ofdx_ac_metrics` へ early_late_50/80・st_early/st_late を**末尾追加** — バージョン 1 呼び出し側 (api_version=1 + 旧 struct_size = `offsetof(ofdx_ac_metrics, early_late_50)`) は引き続き受理し、旧レイアウト分のみ書く。(b) 可変長データ (帯域別指標・反射リスト・warning 文字列) は不透明ハンドル `ofdx_ac_result` + アクセサ関数で公開 — `ofdx_ac_analyze_rir_full` (config NULL = Compat6、band_set 5 種) / `band_count`・`band_info` (中心周波数・エッジ・filter_ok・INR)・`band_label`・`band_metrics` / `reflection_count`・`reflection` / `warning_count`・`warning` / `overall_quality` / `result_destroy`。out 構造体はすべて struct_size 検査つき (今後も末尾追加のみ)。ST は測定条件をデータから検証できないため生値+品質を返し (JSON と同じ方針)、3 値表示規則の適用は呼び出し側の責任とヘッダに明記。`test_c_api` 39 → 281 checks (v1 互換の番兵不変 / el50=D50/(1−D50) 恒等式 / FULL_ONLY と広帯域 API の同値 / 帯域別 T30 ±0.15 / エコー検出 / エラー系) — 純 C99 コンパイルのまま |
+| 6 | ~~`QtAcousticAdapter::readWav` がファイル全体を QByteArray に読む~~ **解消済み (2026-08-16)** | (解消前: 巨大 WAV (長時間・高 fs) でファイル全体の複製分メモリピークが増えた) | **完了**: `WavReader` に逐次読みの供給源抽象 `WavByteSource` (read/seek/size, C++14・Qt 非依存) を導入し、パーサを 2 パス (チャンクヘッダ走査 → data チャンクへ戻って 64 KiB ブロック単位デコード) の `readWavFromSource()` に一本化。`readWavFromMemory` / `readWavFile` / `QtAcousticAdapter::readWav` (QFile 供給源 — 非 ASCII パス対応は従来どおり) の 3 経路すべてが同じパーサを通るので挙動差は構造的に生じない。メモリピークはデコード結果 (double 配列) + 64 KiB。デコード式は不変で、`test_wav` +14 checks (ファイル/メモリ経路のビット一致 / data チャンクが fmt より前でも読める / 切り詰めファイルの FileReadError) |
 | 7 | ~~帯域フィルタの数値精度検証が fs=48 kHz のみ (低い fc/fs 比 — 例 63 Hz @ 96 kHz — の IIR 係数精度が未検証)~~ **解消済み** | (解消前: 高 fs 入力の低帯域で精度低下の可能性が未評価だった) | **完了**: `tests/acoustics/test_bandfilter.cpp` (563 checks) を追加。48/96 kHz の 63・125・250 Hz オクターブ帯と 100 Hz 1/3 オクターブ帯について、設計された離散フィルタの**厳密な期待振幅特性** (プリワープ後のバターワース解析解) と正弦波応答を直接比較。**精度低下は無かった** — 解析解との相対誤差は最悪 3.7e-6 (63 Hz @ 96 kHz, fc/fs = 6.6e-4)、48 kHz でも 96 kHz でも通過帯域利得 1.000000±4e-6 / エッジ −3.0103 dB / ±1 oct −13.274 dB / ±2 oct −28.99 dB。インパルス応答の末尾減衰 (≤1e-21·peak) と DC 漏れ (≤1e-13) で係数の悪条件も否定 |
 | 8 | ~~クリッピング検出の陽性系ユニットテストが無い (統合テストの陰性確認のみ)~~ **解消済み** | (解消前: 検出ロジック回帰の検出漏れ) | **完了**: `tests/acoustics/test_clipping.cpp` (60 checks) を追加。`RirAnalyzer` (連続区間検出) と `ConvolutionEngine` (サンプル数カウント) の**両方**について陽性系を検証。境界値は実装仕様に合わせる — 判定は**厳密な `>`** なので閾値ちょうど (0.999) は非検出、1 ulp 上と 1.0 は検出。連続数が `clipRunLength` (既定 3) 未満は非検出、`clippedRunCount` は区間数 (サンプル数ではない)、判定は DC 除去の**前**に生サンプルで行う |
 | 9 | ~~MiniPlot に対話機能 (ズーム/カーソル) が無い (フェーズ0 調査 §2.3)~~ **解消済み (2026-08-15)** | (解消前: 減衰カーブの詳細確認がしづらい) | **完了**: ホバーで最寄り点へスナップして値を読み出し (24px 以内。遠いときはカーソル座標)、ラバーバンドドラッグで x/y 拡大、ダブルクリックで全体表示。拡大中は "zoom" 表示 + 系列をプロット枠でクリップ。`setSeries` で拡大は解除 (データが変わったのに古い視野を残すと空の図を黙って見せるため)。写像は `computeView()` に集約し描画とマウス処理で共有 (2 か所で別々に計算するとずれる)。外部ライブラリなし (QPainter のみ)、全 MiniPlot 利用タブ (減衰カーブ / RT60 / NC / エコーグラム / 分散曲線 …) に自動で効く |
@@ -114,11 +114,15 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   (`USE_HDF5=OFF`)。G の基準 (負債 #10) の
   .ofdx 往復・旧ファイル既定・既定バイト不変・アダプタ配線で +22、
   一括レポートへの STI / G 取り込みで +10 (**11274 / 11170**)、
-  main マージ後 11283、ST 3 値表示規則 (要求 §3.2) で +28 (**11311**)。
-  `ctest` = **22 テスト / 合計 1655 checks, 0 failures**
-  (`acoustics.strength` 89 checks を新規追加)。
-- 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,
-  0 failures** (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
+  main マージ後 11283、ST 3 値表示規則 (要求 §3.2) で +28 (**11311**)、
+  schemaVersion "1.1" (負債 #2) で +7 (**11318**)。
+  `ctest` = **22 テスト / 合計 1911 checks, 0 failures**
+  (`acoustics.strength` 89 checks を新規追加、`test_wav` はストリーミング
+  読み (負債 #6) の検証 +14 で 66 checks、`test_c_api` は api_version 2
+  (負債 #5) の検証 +242 で 281 checks)。
+- 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1900 checks,
+  0 failures** (残り 1 本は `roomac.fitzroy` 11 checks。従来の
+  「15 テスト / 1306」はテスト追加を反映していない古い集計だった) (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
   `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
@@ -1174,9 +1178,8 @@ Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通
 
 ## 5. 次の作業 (優先順)
 
-1. フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)。
-   6 (校正オフセット — 負債 #1) は完了。selftest のラウンドトリップには
-   `auralization` / `solver` ネストも含めること。
+1. ~~フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)~~
+   → **完了 (2026-08-16)**。6 (校正オフセット — 負債 #1) も完了。
 2. ~~負債 #7 / #8 の追加テスト (96 kHz 帯域フィルタ、クリッピング陽性)~~
    → **完了** (`tests/acoustics/test_bandfilter.cpp` /
    `tests/acoustics/test_clipping.cpp`)。

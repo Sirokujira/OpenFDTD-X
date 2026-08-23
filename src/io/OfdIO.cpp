@@ -649,7 +649,11 @@ static QJsonObject ofdxMergeExtra(QJsonObject fresh, const QJsonObject &extra)
 QByteArray OfdxIO::serialize(const Project &p)
 {
     QJsonObject root;
-    root["schemaVersion"] = "1.0";
+    // "1.1" = acoustic.opera_analysis を含む書式 (docs/opera-acoustics-
+    // file-format.md §1)。この serialize は opera_analysis を常に書くので
+    // 常に "1.1"。読み込み側はバージョンで分岐しない (キー有無判定) ため、
+    // 旧リーダーが 1.1 ファイルを読んでも未知キー無視で壊れない。
+    root["schemaVersion"] = "1.1";
     root["domain"] = domainKey(p.activeDomain());
 
     {
