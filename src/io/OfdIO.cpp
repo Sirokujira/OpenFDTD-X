@@ -649,7 +649,7 @@ static QJsonObject ofdxMergeExtra(QJsonObject fresh, const QJsonObject &extra)
 QByteArray OfdxIO::serialize(const Project &p)
 {
     QJsonObject root;
-    root["schemaVersion"] = "1.0";
+    // schemaVersion は最後に決める (下の schemaVersionFor)。
     root["domain"] = domainKey(p.activeDomain());
 
     {
@@ -1320,6 +1320,18 @@ QByteArray OfdxIO::serialize(const Project &p)
     // 読み込んだファイルにあってこの版が書かないキーを書き戻す (round-trip)。
     // 未知キーが無ければ root は不変 = 出力はバイト単位で従来と一致する
     root = ofdxMergeExtra(root, p.ofdxExtra());
+
+    // ── schemaVersion (docs/opera-acoustics-file-format.md §1) ──────────────
+    // "1.1" = acoustic.opera_analysis を含む / "1.0" = 含まない、という定義。
+    // 固定値ではなく**実際に書いた中身**から決める — この関数が
+    // opera_analysis を出さない構成になったときに版だけ残って嘘にならない。
+    // 読み手 (load) は schemaVersion で分岐せずキーの有無で判定するので、
+    // 1.0 しか知らない読み手が 1.1 を読んでも未知キー無視で壊れない。
+    // 未知キーの書き戻し (ofdxMergeExtra) の後に決めるのは、他ツールが
+    // 足した opera_analysis も版に反映するため。
+    const bool hasOpera =
+        root.value("acoustic").toObject().contains("opera_analysis");
+    root["schemaVersion"] = hasOpera ? "1.1" : "1.0";
 
     return QJsonDocument(root).toJson(QJsonDocument::Indented);
 }

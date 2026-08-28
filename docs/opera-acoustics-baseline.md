@@ -35,14 +35,18 @@ cmake --build build -j
 実測出力:
 
 ```
-24 files loaded, 1560 checks, 0 failures
+24 files loaded, 11455 checks, 0 failures
 ```
+
+(この数値は 2026-08-23 時点。フェーズ0 の初版は 1560 checks で、その後の
+機能追加ごとにテストを足して増えている。**減ってはならない** — 減少は
+テストの取りこぼしを意味する。)
 
 exit code = 0。
 
 - **24 files loaded**: `tests/data/*.ofd` の OpenFDTD サンプル24ファイル全件を
   ロード → シリアライズ → 再パースし構造完全一致を確認 (.ofd ラウンドトリップ)。
-- **1560 checks / 0 failures**: 上記ラウンドトリップ比較に加え、
+- **11,455 checks / 0 failures**: 上記ラウンドトリップ比較に加え、
   ボクセライザ・ガラスカタログ (Sellmeier/AGF/CSV)・室内音響
   (Sabine 既知値 / Eyring / Barron 単調性 / NC / エコーグラム /
   AcousticOpts の .ofdx ラウンドトリップ) を含む。
@@ -72,8 +76,9 @@ QT_QPA_PLATFORM=offscreen ./build/openfdtd_x --help
 1. `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j` が
    常に成功すること (Qt 6.4.2 / GCC 13, Ubuntu 24.04 で確認済み)。
 2. `./build/ofdx_selftest` が常に **0 failures / exit 0** であること。
-   既存 1560 チェックは1件も失敗させない (テスト追加によりチェック総数が
-   増えるのは可。その際は本書の数値を更新する)。
+   既存チェック (2026-08-23 時点で 11,455) は1件も失敗させない
+   (テスト追加によりチェック総数が増えるのは可。その際は本書の数値を
+   更新する。**減らすのは不可**)。
 3. `QT_QPA_PLATFORM=offscreen ./build/openfdtd_x --help` が exit 0 であること。
 4. `.ofd` 形式 (本家互換) の読み書きを変更しない。音響拡張は `.ofdx` の
    追加キーのみで行い、既存キーの改名・削除・型変更をしない。
