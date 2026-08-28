@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 0 | 事前調査・基準記録・ライセンス調査 | **完了** | `docs/opera-acoustics-existing-analysis.md` / `opera-acoustics-baseline.md` (selftest 1560 checks 実測) / `licensing-review.md` |
 | 1 | C++14 音響分析コア (RIR パイプライン + WAV I/O + テスト) | **完了** | `src/acoustics/core/` (RirAnalyzer ほか 9 モジュール)、`src/acoustics/io/` (WavReader/Writer)、`tests/acoustics/` 6 テスト + 生成器。検証 392 checks / 0 failures (`docs/opera-acoustics-validation.md`) |
-| 2 | GUI 統合 (C API / Qt アダプター / RirAnalysisTab / .ofdx / CI) | **実装中** | 済: CMake ターゲット分離 (`ofdx_acoustic_core` C++14 固定 / `ofdx_acoustic_c_api`)、C API 実装 + 純 C テスト (`test_c_api.c`)、`QtAcousticAdapter`、`OperaAcousticSettings`、`.ofdx opera_analysis` save/load、CI への ctest 追加。未: 下記 §2 |
+| 2 | GUI 統合 (C API / Qt アダプター / RirAnalysisTab / .ofdx / CI) | **完了 (2026-08-23)** | CMake ターゲット分離 (`ofdx_acoustic_core` C++14 固定 / `ofdx_acoustic_c_api`)、C API 実装 + 純 C テスト (`test_c_api.c`)、`QtAcousticAdapter`、`OperaAcousticSettings`、`.ofdx opera_analysis` save/load、CI への ctest 追加、`RirAnalysisTab` と MainWindow 統合、schemaVersion "1.1" 書き出し (§2 の 1〜6 をすべて消化) |
 | 3 | 歌声信号分析 (VocalAnalyzer: YIN F0 / ピッチ安定性 / ビブラート / LTAS / 重心 / HNR / H1–H8 / 帯域エネルギー / 歌手フォルマント比 / フォルマント F1–F3 (LPC — 負債 #14)) | **実装済み** | `src/acoustics/core/` VocalAnalyzer + FormantEstimator (C++14)、`VocalAnalysisTab`。定義: `docs/opera-acoustic-metrics.md` §10、ADR-0006 |
 | 4 | 可聴化 (ConvolutionEngine: 自前 radix-2 FFT + Overlap-Add、A/B = ドライ/ウェット WAV 書き出し) | **実装済み** | `src/acoustics/core/` Fft / ConvolutionEngine、`AuralizationTab`、`.ofdx` `opera_analysis.auralization`。ADR-0005。旧フェーズ4 計画分 (ST 系 / G 絶対値 / 校正ワークフロー / レポート出力) は残課題へ移動 (§3 負債 #10) |
 | 5 | 外部音響ソルバー連携 (AcousticRunner QProcess 疎結合・AcousticBackend 5 値・出力契約・モックソルバー CI・AcousticFdtdEstimator) | **実装済み** | `src/acoustics/qt/AcousticRunner`、`AcousticSolverTab`、`.ofdx` `opera_analysis.solver`、CI モックソルバー統合テスト。ADR-0004 / ADR-0007 |
@@ -26,8 +26,16 @@
 4. **selftest 拡張**: `opera_analysis` の .ofdx ラウンドトリップ
    チェック追加 (チェック総数が 1560 から増えるため baseline 文書の
    数値更新もセット)。
-5. **schemaVersion "1.1" 書き出し**: 現行 save は "1.0" のまま
-   (`docs/opera-acoustics-file-format.md` §1)。
+5. ~~**schemaVersion "1.1" 書き出し**~~ → **完了** (2026-08-23)。
+   `OfdxIO::serialize` が**実際に書いた中身**から版を決める
+   (`acoustic.opera_analysis` があれば "1.1"、無ければ "1.0")。固定値に
+   しないのは、この関数が opera_analysis を出さない構成になったときに
+   版だけ残って嘘にならないようにするため。未知キーの書き戻し
+   (`ofdxMergeExtra`) の後に決めるので他ツールが足した分も反映される。
+   読み手は従来どおり版で分岐せずキーの有無で判定する
+   (`docs/opera-acoustics-file-format.md` §1)。selftest `ofdx-schema`
+   +8 checks (旧 1.0 ファイルを読んで書き戻すと 1.1 へ上がること、
+   同じ中身なら版が違っても読み取り結果が同一であること)。
 6. ~~**calibration_offset_db の追加** (負債 #1)~~ → **完了**
    (`OperaAcousticSettings::calibrationOffsetDb` / `.ofdx`
    `calibration_offset_db` / `RirAnalysisTab` の入力欄 /
@@ -38,7 +46,7 @@
 | # | 内容 | 影響 | 対応方針 |
 |---|---|---|---|
 | 1 | ~~`calibrationOffsetDb` が `OperaAcousticSettings` / `.ofdx` / `QtAcousticAdapter::toAnalyzerConfig` に無い~~ **解消済み** | (解消前: GUI 経由で Absolute を選んでもオフセット 0 dB で絶対 SPL が dBFS のままだった) | **完了**: `OperaAcousticSettings::calibrationOffsetDb` (既定 0.0) + `.ofdx` `calibration_offset_db` (欠落時 0.0) + `RirAnalysisTab` の入力欄 (Absolute 時のみ有効) + `QtAcousticAdapter::toAnalyzerConfig` / `toVocalConfig` で **Absolute 以外は 0 を渡す**ゲート。selftest に往復 / 旧ファイル既定 / ゲート規則のチェックを追加 |
-| 2 | save が `schemaVersion: "1.0"` を書く | 1.1 ファイルの識別ができない (実害は小: 読み込みはキー有無判定) | フェーズ2 残作業 |
+| 2 | ~~save が `schemaVersion: "1.0"` を書く~~ **解消済み (2026-08-23)** | (解消前: 1.1 ファイルの識別ができない。実害は小で、読み込みは元よりキー有無判定) | **完了**: `OfdxIO::serialize` が出力の中身から版を決める (`acoustic.opera_analysis` があれば "1.1")。固定値にせず実際に書いた内容から決めるので、将来 opera_analysis を出さない構成になっても版が嘘にならない。読み手は従来どおり版で分岐しない。selftest `ofdx-schema` +8 checks |
 | 3 | ~~selftest に `opera_analysis` ラウンドトリップ未追加~~ **解消済み (2026-08-15)** | (解消前: 永続化の回帰をテストが検出しない) | **完了**: 実際には往復テスト (`testOperaAcousticSettings` §2) は既に存在しており、この記述は古かった。ただし**全 25 フィールド中 20 しか設定しておらず**、後から追加された ESS 掃引逆畳み込みの 5 フィールド (`sweepDeconvolve`/`sweepStartHz`/`sweepEndHz`/`sweepSec`/`sweepHarmonics`) が往復・旧ファイル既定値の両方から漏れていた (シリアライズ実装自体は正しかったことを確認)。構造体と代入群の突き合わせで検出し、往復 (+3 checks) と旧ファイル既定値 (+1 check) を追加して全 25 フィールドを網羅した |
 | 4 | ~~`.ofdx` の未知キーが保存時に消える (既知フィールド再構成方式)~~ **解消済み (2026-08-15)** | (解消前: 他ツールとの .ofdx 共有で相手のキーを失った) | **完了**: ADR-0003 案B を実装。ロード時に「ファイル − 再シリアライズ結果」の差分を `Project::ofdxExtra()` に保持し、save がマージして書き戻す。既知キーは常に新しい値が勝つ (差分方式なので stale 復活なし)。未知キーの無いファイルでは出力バイト不変。selftest 13 checks (往復逐語保全 / fresh 優先 / バイト不変 / 繰り返し安定)。詳細は ADR-0003 の Update 節 |
 | 5 | C API が広帯域 7 指標のみ (帯域別結果・反射リスト・warning 文字列・Early/Late は未公開) | 外部カーネルからの利用範囲が限定的 | 需要が出た時点で `struct_size`/`api_version` 拡張規約に従い追加 |
@@ -115,8 +123,14 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   .ofdx 往復・旧ファイル既定・既定バイト不変・アダプタ配線で +22、
   一括レポートへの STI / G 取り込みで +10 (**11274 / 11170**)、
   main マージ後 11283、ST 3 値表示規則 (要求 §3.2) で +28 (**11311**)。
-  `ctest` = **22 テスト / 合計 1655 checks, 0 failures**
-  (`acoustics.strength` 89 checks を新規追加)。
+  その後 Windows での CUDA+MPI 対応 (Runner の起動規約・エンジン可用性判定)
+  で +27 (**11338**)、GUI の Runner を MPI で実際に走らせる統合テスト
+  (ctest `kernel.runner_mpi`、22 checks) を追加、schemaVersion "1.1" の
+  書き出し (負債 #2) で +8。
+  **現在値: `ofdx_selftest` = 24 files loaded, 11,455 checks, 0 failures /
+  `ctest` = 23 テスト, 0 failures** (2026-08-23、`USE_HDF5=ON` +
+  実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
+  `USE_HDF5=OFF` の既定ビルドでは 11,258)。
 - 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,
   0 failures** (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
   `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の
@@ -1174,14 +1188,17 @@ Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通
 
 ## 5. 次の作業 (優先順)
 
-1. フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)。
-   6 (校正オフセット — 負債 #1) は完了。selftest のラウンドトリップには
-   `auralization` / `solver` ネストも含めること。
+1. ~~フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)~~
+   → **完了 (2026-08-23)**。§2 の 1〜6 がすべて完了したので**フェーズ2 は
+   完了**。`auralization` / `solver` ネストのラウンドトリップは負債 #3 の
+   対応時に全 25 フィールドを網羅済み。
 2. ~~負債 #7 / #8 の追加テスト (96 kHz 帯域フィルタ、クリッピング陽性)~~
    → **完了** (`tests/acoustics/test_bandfilter.cpp` /
    `tests/acoustics/test_clipping.cpp`)。
-3. フェーズ2 完了時に baseline 文書のチェック総数を更新し、
-   本書のフェーズ表を更新。
+3. ~~フェーズ2 完了時に baseline 文書のチェック総数を更新し、
+   本書のフェーズ表を更新~~ → **完了 (2026-08-23)**。
+   `docs/opera-acoustics-baseline.md` の実測出力と運用ルール 2 を
+   現在値 (11,455 checks) に更新し、本書のフェーズ表の #2 を完了にした。
 4. 残課題の優先度整理: リアルタイム再生 (負債 #11)、実音響ソルバー
    (負債 #13)、声区分析 (負債 #14 の残り — フォルマント推定は解消済み)、
    旧フェーズ4 計画分 (負債 #10 の残り — レポート出力は解消済み、

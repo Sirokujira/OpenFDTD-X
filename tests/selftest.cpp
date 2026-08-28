@@ -2154,6 +2154,57 @@ static void testOperaAcousticSettings()
                   "missing calibration_offset_db defaults to 0.0");
         }
     }
+
+    // ── schemaVersion (docs/opera-acoustics-file-format.md §1) ──────────────
+    // 定義: "1.1" = acoustic.opera_analysis を含む / "1.0" = 含まない。
+    // 現行の serialize は opera_analysis を常に書くので出力は常に 1.1 になる。
+    // **読み手は版で分岐しない** (キーの有無だけで判定する) ことが要点で、
+    // 1.0 と書かれた同じ中身を読んでも結果が変わらないことまで見る。
+    {
+        g_file = "ofdx-schema";
+        Project p;
+        const QByteArray out = OfdxIO::serialize(p);
+        check(out.contains("\"schemaVersion\": \"1.1\""),
+              "schema: opera_analysis を書くので 1.1 を名乗る");
+        check(!out.contains("\"schemaVersion\": \"1.0\""),
+              "schema: 1.0 は残っていない");
+        // 版は実際の中身から決まる (opera_analysis があれば 1.1)
+        const QJsonObject root =
+            QJsonDocument::fromJson(out).object();
+        check(root.value("acoustic").toObject().contains("opera_analysis"),
+              "schema: 1.1 を名乗る根拠 (opera_analysis) が実在する");
+
+        // 旧 "1.0" ファイルを読んで書き戻すと 1.1 へ上がる (中身は保たれる)
+        QTemporaryFile legacy;
+        legacy.setFileTemplate(QDir::tempPath() + "/ofdx_schema_XXXXXX.ofdx");
+        if (legacy.open()) {
+            legacy.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                         "  \"acoustic\": { \"opera_analysis\": {"
+                         "      \"enabled\": true, \"band_mode\": 2 } } }");
+            legacy.flush();
+            Project q;
+            check(OfdxIO::load(legacy.fileName(), q), "schema: 1.0 ファイルを読める");
+            check(q.operaAcoustic().enabled && q.operaAcoustic().bandMode == 2,
+                  "schema: 1.0 ファイルの中身が読める (版で分岐しない)");
+            check(OfdxIO::serialize(q).contains("\"schemaVersion\": \"1.1\""),
+                  "schema: 書き戻すと 1.1 へ上がる");
+
+            // 同じ中身を "1.1" と名乗るファイルにしても読み取り結果は同一
+            QTemporaryFile same;
+            same.setFileTemplate(QDir::tempPath() + "/ofdx_schema11_XXXXXX.ofdx");
+            if (same.open()) {
+                same.write("{ \"schemaVersion\": \"1.1\", \"domain\": \"acoustic\","
+                           "  \"acoustic\": { \"opera_analysis\": {"
+                           "      \"enabled\": true, \"band_mode\": 2 } } }");
+                same.flush();
+                Project r;
+                check(OfdxIO::load(same.fileName(), r), "schema: 1.1 ファイルを読める");
+                check(OfdxIO::serialize(r) == OfdxIO::serialize(q),
+                      "schema: 版が違っても中身が同じなら結果は同一 "
+                      "(読み手は版で分岐しない)");
+            }
+        }
+    }
 }
 
 // ── 音響テンプレートの吸音バジェット期待値 ────────────────────────────────

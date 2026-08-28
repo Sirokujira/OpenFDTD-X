@@ -14,8 +14,16 @@
   **"1.1"** と定義する ("1.0" = opera_analysis なし)。読み込み側は
   schemaVersion で分岐**しない** (キーの有無だけで判定する) ため、
   1.0 リーダーが 1.1 ファイルを読んでも未知キー無視で壊れない。
-  注: 現行実装の save はまだ "1.0" を書き出しており、"1.1" への更新は
-  フェーズ2 の残作業 (`docs/opera-acoustics-development-status.md` §3)。
+- **実装済み** (`OfdxIO::serialize`)。版は固定値ではなく**実際に書いた
+  中身**から決める — 出力に `acoustic.opera_analysis` があれば "1.1"、
+  無ければ "1.0"。こうしておくと、この関数が opera_analysis を出さない
+  構成になったときに版だけ残って嘘にならない。未知キーの書き戻し
+  (`ofdxMergeExtra`) の後に決めるので、他ツールが足した `opera_analysis`
+  も版に反映される。現行 save は `acoustic` を常に書くため、出力は
+  実際には常に "1.1" になる。
+- 旧 "1.0" ファイルを読んで保存し直すと "1.1" へ上がる (中身は保たれる)。
+  版で分岐しないので、同じ中身が "1.0" と名乗っていても "1.1" と名乗って
+  いても読み取り結果は同一 — selftest の `ofdx-schema` が検査する。
 
 ## 2. `acoustic.opera_analysis` キー一覧 (schemaVersion 1.1)
 
