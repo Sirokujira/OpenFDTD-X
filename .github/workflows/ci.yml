@@ -5,7 +5,9 @@
 # selftest の統合スモーク (OFDX_OFD_BIN — dipole.ofd 実行 → normal end) と、
 # MPI 版 (ofd_mpi) を使う ctest の kernel.runner_mpi (Runner が mpiexec を
 # 起動して完走し、結果が CPU 実行と一致すること) を回す。
-# 光 (orcwa/obpm)・水中 (bellhopcxx) はオプションカーネルで CI 対象外。
+# 水中 (bellhopcxx) も Linux ジョブでビルドし、GUI が書いた .env を実カーネルで
+# 走らせる統合スモーク (OFDX_BELLHOP_BIN) を回す。光 (orcwa/obpm) は
+# オプションカーネルで CI 対象外 (GUI 側の分岐は selftest が担保する)。
 # 3 OS とも USE_HDF5=ON でビルドする (HDF5 の読み書きは結果表示の必須経路で、
 # OFF のジョブでは io/H5Reader・io/H5Writer のテストが丸ごと skip されるため)。
 name: CI
@@ -55,8 +57,29 @@ jobs:
           cmake --build /tmp/OpenFDTD/build-mpi -j"$(nproc)"
           test -x /tmp/OpenFDTD/bin/ofd_mpi
 
+      # 水中音響 (bellhopcxx) の統合スモーク。GUI の io/BellhopIO が書いた .env を
+      # 実カーネルで走らせ、.shd (TL 音場) ができるところまで selftest が見る。
+      # これを入れないと水中ドメインの end-to-end 検証は CI で一度も走らない。
+      # GUI は 2D の RunType (R=レイ / E=固有線 / C=コヒーレント TL) しか
+      # 出さないので 3D / Nx2D は無効にしてビルド時間を詰める (実測 36 秒 -j4)。
+      # bellhopcuda は GPL-3 だが、ここでも GUI と同じく subprocess として
+      # 起動するだけで、リンクはしない (docs/underwater-fdtd-solver-spec.md)。
+      - name: Build bellhopcxx (underwater integration smoke)
+        run: |
+          git clone --depth 1 --recursive \
+            https://github.com/Sirokujira/bellhopcuda.git /tmp/bellhopcuda
+          cmake -S /tmp/bellhopcuda -B /tmp/bellhopcuda/build \
+            -DCMAKE_BUILD_TYPE=Release -DBHC_ENABLE_CUDA=OFF \
+            -DBHC_BUILD_EXAMPLES=OFF \
+            -DBHC_DIM_ENABLE_3D=OFF -DBHC_DIM_ENABLE_NX2D=OFF
+          cmake --build /tmp/bellhopcuda/build -j"$(nproc)" --target bellhopcxx
+          test -x /tmp/bellhopcuda/bin/bellhopcxx
+
       - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
-        run: OFDX_OFD_BIN=/tmp/OpenFDTD/bin/ofd ./build/ofdx_selftest
+        run: ./build/ofdx_selftest
+        env:
+          OFDX_OFD_BIN: /tmp/OpenFDTD/bin/ofd
+          OFDX_BELLHOP_BIN: /tmp/bellhopcuda/bin/bellhopcxx
 
       # 音響コア (C++14) は上の Build ステップに含まれる。ここでは CTest に
       # 登録された acoustics.* テストを実行する。合成 RIR による残響指標の
