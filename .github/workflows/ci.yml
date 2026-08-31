@@ -2,8 +2,12 @@
 # 処理ロジック (ofd/orcwa/obpm) はビルドに不要 (実行時に QProcess で起動する
 # 疎結合) のため、ビルド自体はカーネル無しで完結する。
 # ただし OpenFDTD (ofd) は基幹カーネルのため、Linux ジョブだけは実ビルドして
-# selftest の統合スモーク (OFDX_OFD_BIN — dipole.ofd 実行 → normal end) を回す。
+# selftest の統合スモーク (OFDX_OFD_BIN — dipole.ofd 実行 → normal end) と、
+# MPI 版 (ofd_mpi) を使う ctest の kernel.runner_mpi (Runner が mpiexec を
+# 起動して完走し、結果が CPU 実行と一致すること) を回す。
 # 光 (orcwa/obpm)・水中 (bellhopcxx) はオプションカーネルで CI 対象外。
+# 3 OS とも USE_HDF5=ON でビルドする (HDF5 の読み書きは結果表示の必須経路で、
+# OFF のジョブでは io/H5Reader・io/H5Writer のテストが丸ごと skip されるため)。
 name: CI
 
 on:
@@ -34,14 +38,22 @@ jobs:
 
       # 基幹カーネル OpenFDTD を実ビルドし、selftest の統合スモークに渡す
       # (GUI → subprocess 連携の回帰検出。光/水中カーネルはオプションのため対象外)
+      # CPU 版に加えて MPI 版もビルドする。両方 /tmp/OpenFDTD/bin に入るので、
+      # ctest の kernel.runner_mpi (GUI の Runner が mpiexec を起動して
+      # 完走し、結果が CPU 実行と一致することを見る統合テスト) が走るようになる。
+      # ここを入れないと、Runner の MPI 経路は CI で一度も実行されない。
       - name: Build OpenFDTD kernel (integration smoke)
         run: |
-          sudo apt-get install -y libhdf5-dev
+          sudo apt-get install -y libhdf5-dev libopenmpi-dev openmpi-bin
           git clone --depth 1 https://github.com/Sirokujira/OpenFDTD.git /tmp/OpenFDTD
           cmake -S /tmp/OpenFDTD -B /tmp/OpenFDTD/build \
             -DCMAKE_BUILD_TYPE=Release -DWITH_CUDA=OFF -DWITH_MPI=OFF
           cmake --build /tmp/OpenFDTD/build -j"$(nproc)"
           test -x /tmp/OpenFDTD/bin/ofd
+          cmake -S /tmp/OpenFDTD -B /tmp/OpenFDTD/build-mpi \
+            -DCMAKE_BUILD_TYPE=Release -DWITH_CUDA=OFF -DWITH_MPI=ON
+          cmake --build /tmp/OpenFDTD/build-mpi -j"$(nproc)"
+          test -x /tmp/OpenFDTD/bin/ofd_mpi
 
       - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
         run: OFDX_OFD_BIN=/tmp/OpenFDTD/bin/ofd ./build/ofdx_selftest
@@ -56,8 +68,15 @@ jobs:
       # acoustics.runner はビルド済みモックソルバー
       # (ofdx_mock_acoustic_solver — 出力契約の参照実装) を起動して
       # AcousticRunner → 契約検証 → RirAnalyzer の統合経路を検証する。
+      # OFDX_OFD_BIN があると kernel.runner_mpi も走る (無ければ skip)。
+      # OpenMPI を root で走らせるための --allow-run-as-root は
+      # OMPI_ALLOW_RUN_AS_ROOT で渡す (GitHub のランナーは root 実行)。
       - name: Acoustics tests (ctest)
         run: ctest --test-dir build --output-on-failure
+        env:
+          OFDX_OFD_BIN: /tmp/OpenFDTD/bin/ofd
+          OMPI_ALLOW_RUN_AS_ROOT: 1
+          OMPI_ALLOW_RUN_AS_ROOT_CONFIRM: 1
 
       - name: GUI smoke (offscreen screenshot)
         run: |
@@ -104,8 +123,20 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      # Windows も USE_HDF5=ON でビルドする。Linux / macOS は既に ON なのに
+      # ここだけ OFF で、HDF5 読み書き (io/H5Reader / io/H5Writer) のテストが
+      # **Windows では 1 件も走っていなかった** (selftest が "built without
+      # USE_HDF5" と出して skip する ~190 checks)。依存はカーネル側の
+      # Windows CI と同じ vcpkg の静的リンク (x64-windows-static-md) を使う。
+      # szip は libaec の取得が不安定なので使わない (core+zlib のみ)。
+      - name: Install HDF5 (vcpkg)
+        run: vcpkg install "hdf5[core,zlib]:x64-windows-static-md" --recurse
+
       - name: Configure
-        run: cmake -B build
+        run: >
+          cmake -B build -DUSE_HDF5=ON
+          "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
 
       - name: Build (Release)
         run: cmake --build build --config Release
