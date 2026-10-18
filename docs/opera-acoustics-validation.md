@@ -74,7 +74,7 @@ T30: insufficient dynamic range (noise floor -24.9 dB > required -45.0 dB = -35 
 Invalid でないこと、未校正時に絶対 SPL が invalid になること、
 Absolute 校正 (offset 94 dB) 時のみ valid になることを確認。
 
-## 3. C50 / C80 / D50 / Ts の理論値一致 (test_clarity — 19 checks PASS)
+## 3. C50 / C80 / D50 / Ts の理論値一致 (test_clarity — 31 checks PASS)
 
 解析的に計算できる 2 反射 RIR (直接音 1.0、60 ms に 0.5、100 ms に 0.4)。
 
@@ -334,13 +334,18 @@ count=0 かつ警告なし (出力は正規化されず 1.8 のまま)。
 | test_wav | 66 | 0 |
 | test_c_api | 281 | 0 |
 | test_acoustic_runner | 45 | 0 |
-| **合計 (ctest 23 テスト — `kernel.runner_mpi` は checks を出さない)** | **1911** | **0** |
+| **合計 (ctest 23 テストのうち上表の 22 本)** | **1911** | **0** |
 
 (フェーズ1 記録時点の集計は 7 テスト 392 checks。以降のフェーズ 3/4/5 と
 負債 #7 / #8 の解消分を含めた現在値が上表。)
 
-既存 baseline (`ofdx_selftest`: 24 files loaded, 1870 checks,
-0 failures) は本コア追加の影響を受けない (コアは既存コードに
+`kernel.runner_mpi` は音響の検証ではない (GUI の Runner を MPI で実際に
+走らせる統合テスト) ので上表に含めていない。`OFDX_OFD_BIN` が無い環境では
+skip して件数を出さないが、カーネルと MPI があれば `runner mpi: 22 checks`
+を出す (2026-10-19 に ofd_mpi + MS-MPI 接続で実測)。
+
+既存 baseline (`ofdx_selftest`。現在値は `docs/opera-acoustics-baseline.md`)
+は本コア追加の影響を受けない (コアは既存コードに
 リンクされるのみで既存経路を変更しない)。
 
 **未達成項目なし** — 定義した許容基準 (残響指標 ±5%、Schroeder 傾き
