@@ -19,6 +19,9 @@ Windows 固有の後始末までやる:
     Explorer からのダブルクリックが 0xC0000135 で無言のまま落ちる)
   - ヘッドレス用に qoffscreen.dll / qminimal.dll も置く (windeployqt は置かない)
   - MPI 版カーネルの隣に msmpi.dll を置く (手で叩いたときに動くように)
+  - 構成とビルドを UTF-8 のコンソールで行う。日本語版 MSVC ではこうしないと
+    Ninja がヘッダの依存を記録できず、ヘッダを変えても .cpp が再コンパイル
+    されない (docs/windows-cuda-mpi-build.md「日本語版 MSVC のヘッダ依存」)
 
 macOS / Linux は同じディレクトリの update-and-build.sh を使う。
 
@@ -84,6 +87,56 @@ function Invoke-Logged($log, $append, [string[]] $cmdline) {
 }
 function Warn($text) { Write-Host "! $text" -ForegroundColor Yellow }
 function Fail($text) { Write-Host "x $text" -ForegroundColor Red }
+
+# ── 日本語版 MSVC + Ninja のヘッダ依存 ──────────────────────────────────────
+# cl は /showIncludes の行頭 (日本語版は「メモ: インクルード ファイル:」) を
+# **起動時のコンソールの出力コードページで**書く。CMake はこの接頭辞を構成時の
+# コードページで rules.ninja の msvc_deps_prefix に書き、ninja はバイト列で
+# 照合する。ところがリンク工程はリンク中だけコンソールを UTF-8 (65001) に
+# 切り替えるので、CP932 のまま並列ビルドすると、リンクと重なって起動した cl の
+# 行が照合できず、その .obj の依存が 1 件も記録されない (実測: クリーン
+# ビルド直後に 360 個中 318 個が 0 件。ヘッダを変えても再コンパイルされない)。
+# 構成もビルドも UTF-8 で行えば、リンクが切り替えても値は変わらず常に一致する。
+# 英語版 MSVC は接頭辞が ASCII なのでどのコードページでも一致する (害は無い)。
+$script:savedChcp = $null
+$script:savedOutEnc = $null
+function Use-Utf8Console {
+    try {
+        $script:savedOutEnc = [Console]::OutputEncoding
+        $script:savedChcp = ((chcp.com) -replace '\D', '')
+        chcp.com 65001 > $null
+        # PowerShell が外部コマンドの出力を読むときの文字コードも合わせる
+        # (ログが文字化けしないように)
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    } catch {
+        Warn "コンソールを UTF-8 に切り替えられませんでした ($($_.Exception.Message))。日本語版 MSVC ではヘッダの依存が記録されないことがあります"
+    }
+}
+function Restore-Console {
+    if ($script:savedChcp) { chcp.com $script:savedChcp > $null }
+    if ($script:savedOutEnc) { try { [Console]::OutputEncoding = $script:savedOutEnc } catch { } }
+}
+# UTF-8 でないコンソールで作られた build を見分ける。rules.ninja の
+# msvc_deps_prefix が非 ASCII で、しかも UTF-8 として読めなければ旧い構成。
+# 構成をやり直すと rules.ninja は直るが、既にある .obj は依存が記録されて
+# いないままなので、ヘッダを変えても再コンパイルされない。一度だけ作り直す。
+function Get-CleanFirstArg($bdir, $label) {
+    $rules = Join-Path $bdir "CMakeFiles\rules.ninja"
+    if (-not (Test-Path $rules)) { return @() }
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)   # バイトをそのまま文字へ
+    $m = [regex]::Match($latin1.GetString([System.IO.File]::ReadAllBytes($rules)),
+                        'msvc_deps_prefix = ([^\r\n]*)')
+    if (-not $m.Success) { return @() }
+    $prefix = $latin1.GetBytes($m.Groups[1].Value)
+    if (-not ($prefix | Where-Object { $_ -ge 0x80 })) { return @() }   # ASCII
+    try {
+        [void](New-Object System.Text.UTF8Encoding($false, $true)).GetString($prefix)
+        return @()                                                        # UTF-8 で構成済み
+    } catch {
+        Warn "[$label] UTF-8 でないコンソールで構成された build で、ヘッダの依存が記録されていません。一度だけ作り直します (--clean-first)"
+        return @("--clean-first")
+    }
+}
 
 # ── MSVC の環境を取り込む ────────────────────────────────────────────────
 # cl.exe / cmake / ninja に PATH を通すため vcvars64.bat の結果を移植する。
@@ -325,11 +378,12 @@ function Build-Kernel($name, $cfg) {
     }
 
     if ($Clean -and (Test-Path $bdir)) { Remove-Item -Recurse -Force $bdir }
+    $cf = Get-CleanFirstArg $bdir "$name/$cfg"
     Write-Host "  [$name/$cfg] configure"
     $rc = Invoke-Logged $log $false (@("cmake", "-S", $d, "-B", $bdir, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release") + $opts)
     if ($rc -ne 0) { Fail "[$name/$cfg] configure 失敗 — $log"; Record "NG" "$name/$cfg" "configure"; return }
     Write-Host "  [$name/$cfg] build"
-    $rc = Invoke-Logged $log $true @("cmake", "--build", $bdir, "-j", "$Jobs")
+    $rc = Invoke-Logged $log $true (@("cmake", "--build", $bdir, "-j", "$Jobs") + $cf)
     if ($rc -ne 0) { Fail "[$name/$cfg] ビルド失敗 — $log"; Record "NG" "$name/$cfg" "build"; return }
 
     # MPI 版は msmpi.dll が隣に無いと単体起動が 0xC0000135 で落ちる
@@ -369,11 +423,12 @@ function Build-Gui {
         }
     }
     if ($Clean -and (Test-Path $bdir)) { Remove-Item -Recurse -Force $bdir }
+    $cf = Get-CleanFirstArg $bdir "gui"
     Write-Host "  [gui] configure"
     $rc = Invoke-Logged $log $false (@("cmake", "-S", $d, "-B", $bdir, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release") + $opts)
     if ($rc -ne 0) { Fail "[gui] configure 失敗 — $log"; Record "NG" "gui" "configure"; return }
     Write-Host "  [gui] build"
-    $rc = Invoke-Logged $log $true @("cmake", "--build", $bdir, "-j", "$Jobs")
+    $rc = Invoke-Logged $log $true (@("cmake", "--build", $bdir, "-j", "$Jobs") + $cf)
     if ($rc -ne 0) { Fail "[gui] ビルド失敗 — $log"; Record "NG" "gui" "build"; return }
 
     # Qt のランタイムを実行ファイルの隣へ。これをやらないとビルドに使った
@@ -428,13 +483,14 @@ function Build-Bellhop {
     }
     $cudaOpt = if ($haveCuda) { "-DBHC_ENABLE_CUDA=ON" } else { "-DBHC_ENABLE_CUDA=OFF" }
     if ($Clean -and (Test-Path $bdir)) { Remove-Item -Recurse -Force $bdir }
+    $cf = Get-CleanFirstArg $bdir "bellhop"
     Write-Host "  [bellhop] configure"
     $rc = Invoke-Logged $log $false @("cmake", "-S", $d, "-B", $bdir, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release", $cudaOpt, "-DBHC_BUILD_EXAMPLES=OFF")
     if ($rc -ne 0) { Fail "[bellhop] configure 失敗 — $log"; Record "NG" "bellhop" "configure"; return }
     Write-Host "  [bellhop] build (CUDA 版はテンプレート実体化が多く時間がかかります)"
     $targets = @("--target", "bellhopcxx")
     if ($haveCuda) { $targets += "bellhopcuda" }
-    $rc = Invoke-Logged $log $true (@("cmake", "--build", $bdir, "-j", "$Jobs") + $targets)
+    $rc = Invoke-Logged $log $true (@("cmake", "--build", $bdir, "-j", "$Jobs") + $cf + $targets)
     if ($rc -ne 0) { Fail "[bellhop] ビルド失敗 — $log"; Record "NG" "bellhop" "build"; return }
     Record "OK" "bellhop" (Join-Path $d "bin")
 }
@@ -444,14 +500,19 @@ function Build-Acoustics {
     $bdir = Join-Path $d "build"
     $log  = "$bdir.log"
     if ($Clean -and (Test-Path $bdir)) { Remove-Item -Recurse -Force $bdir }
+    $cf = Get-CleanFirstArg $bdir "acoustics"
     Write-Host "  [acoustics] configure / build (OpenMP のみ。CUDA / MPI 版はありません)"
     $rc = Invoke-Logged $log $false @("cmake", "-S", $d, "-B", $bdir, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release")
-    if ($rc -eq 0) { $rc = Invoke-Logged $log $true @("cmake", "--build", $bdir, "-j", "$Jobs") }
+    if ($rc -eq 0) { $rc = Invoke-Logged $log $true (@("cmake", "--build", $bdir, "-j", "$Jobs") + $cf) }
     if ($rc -ne 0) { Fail "[acoustics] 失敗 — $log"; Record "NG" "acoustics" "build"; return }
     Record "OK" "acoustics" $bdir
 }
 
 # ── 実行 ──────────────────────────────────────────────────────────────────
+# ここから先 (pull / 構成 / ビルド / テスト) は UTF-8 のコンソールで行い、
+# 終わったら (Ctrl+C で止めた場合も) 元のコードページへ戻す
+Use-Utf8Console
+try {
 Head "リポジトリの更新"
 if ($NoPull) { Write-Host "  (-NoPull のため省略)" }
 foreach ($k in @("gui", "ofd", "orcwa", "obpm", "bellhop", "acoustics")) {
@@ -489,6 +550,9 @@ Write-Host "  `$env:OPENRCWA_HOME  = `"$Root\$($dirOf['orcwa'])`""
 Write-Host "  `$env:OPENBPM_HOME   = `"$Root\$($dirOf['obpm'])`""
 Write-Host "  `$env:BELLHOPCUDA_HOME = `"$Root\$($dirOf['bellhop'])`""
 Write-Host "検出結果は次で確認できます: $Root\$($dirOf['gui'])\build\openfdtd_x.exe --check-kernels"
+} finally {
+    Restore-Console
+}
 
 if ($results | Where-Object { $_.状態 -eq "NG" }) { exit 1 }
 exit 0
