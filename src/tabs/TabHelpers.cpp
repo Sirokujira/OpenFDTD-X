@@ -4,9 +4,12 @@
 #include <QComboBox>
 #include "../core/PostPrereq.h"
 #include "../I18n.h"
+#include "../acoustics/io/WavWriter.h"
 
 #include <QAbstractButton>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFileDialog>
 #include <QLabel>
 #include <QMessageBox>
@@ -106,7 +109,9 @@ convolveWithPrep(const QString &dryPath, const QString &rirPath,
                  const audioedit::SourcePrep &prep, bool *outPrepped,
                  std::vector<double> *outDry, std::vector<double> *outWet,
                  double *outSampleRate,
-                 QtAcousticAdapter::RirResampleNote *outResample)
+                 QtAcousticAdapter::RirResampleNote *outResample,
+                 const QString &preppedDryPath,
+                 bool *outPreppedDryWritten)
 {
     using acoustics::AcousticResult;
     using acoustics::AudioBuffer;
@@ -114,6 +119,7 @@ convolveWithPrep(const QString &dryPath, const QString &rirPath,
     typedef AcousticResult<ConvolutionInfo> Result;
 
     if (outPrepped) *outPrepped = false;
+    if (outPreppedDryWritten) *outPreppedDryWritten = false;
     const AcousticResult<AudioBuffer> dry = QtAcousticAdapter::readWav(dryPath);
     if (!dry.success())
         return Result::error(dry.errorCode(),
@@ -129,9 +135,36 @@ convolveWithPrep(const QString &dryPath, const QString &rirPath,
                              "the source pre-processing left an empty dry "
                              "signal");
     if (outPrepped) *outPrepped = !prep.isIdentity();
-    return QtAcousticAdapter::convolveBuffers(dryBuf, rir.value(), outputPath,
-                                              gainMode, outDry, outWet,
-                                              outSampleRate, outResample);
+    const Result res =
+        QtAcousticAdapter::convolveBuffers(dryBuf, rir.value(), outputPath,
+                                           gainMode, outDry, outWet,
+                                           outSampleRate, outResample);
+
+    // A/B 試聴用の前処理後ドライ。前処理が恒等なら元ファイルがそのまま
+    // 「畳み込んだドライ」なので書かない。失敗した実行の分も書かない。
+    // 入出力と同じパスなら書かない — 比較用の副産物で利用者の音源や
+    // 結果を上書きしてはならない (同一判定は絶対パスで行う)。
+    if (res.success() && !prep.isIdentity() && !preppedDryPath.isEmpty()) {
+        const QString target = QFileInfo(preppedDryPath).absoluteFilePath();
+        bool clash = false;
+        for (const QString &p : { dryPath, rirPath, outputPath })
+            if (QFileInfo(p).absoluteFilePath()
+                    .compare(target, Qt::CaseInsensitive) == 0)
+                clash = true;
+        if (!clash) {
+            const AcousticResult<bool> wr = acoustics::writeWavFile(
+                std::string(QFile::encodeName(target).constData()), dryBuf,
+                acoustics::WavSampleFormat::Float32);
+            if (outPreppedDryWritten) *outPreppedDryWritten = wr.success();
+        }
+    }
+    return res;
+}
+
+QString preppedDryPathFor(const QString &wetPath)
+{
+    const QFileInfo fi(wetPath);
+    return fi.dir().filePath(fi.completeBaseName() + QStringLiteral("_dry.wav"));
 }
 
 audioedit::SourcePrep sourcePrep(const AcousticOpts &a)
