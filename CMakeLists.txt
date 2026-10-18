@@ -19,6 +19,36 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# 日本語版 MSVC + Ninja のヘッダ依存 (docs/windows-cuda-mpi-build.md
+# 「日本語版 MSVC のヘッダ依存」)。cl は /showIncludes の行頭をコンソールの
+# 出力コードページで書き、CMake はそれを構成時のコードページで rules.ninja
+# に記録する。リンク工程はリンク中だけコンソールを UTF-8 にするので、UTF-8
+# でないコンソールで構成・ビルドすると大半の .obj で依存が記録されず、
+# ヘッダを変えても再コンパイルされない (実測で 360 個中 318 個)。英語版
+# MSVC は接頭辞が ASCII なので起きない。検出できる構成時に警告する。
+if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja" AND CMAKE_CL_SHOWINCLUDES_PREFIX)
+    string(REGEX MATCH "[^ -~]" _ofdx_nonascii "${CMAKE_CL_SHOWINCLUDES_PREFIX}")
+    if(_ofdx_nonascii)
+        execute_process(COMMAND chcp.com OUTPUT_VARIABLE _ofdx_chcp
+                        ERROR_QUIET RESULT_VARIABLE _ofdx_chcp_rc)
+        string(REGEX MATCH "[0-9]+" _ofdx_cp "${_ofdx_chcp}")
+        if(_ofdx_cp AND NOT _ofdx_cp STREQUAL "65001")
+            message(WARNING
+                "非英語版の MSVC を、UTF-8 でないコンソール (コードページ "
+                "${_ofdx_cp}) で Ninja 構成しています。この組み合わせでは "
+                "ヘッダの依存が記録されず、ヘッダを変えても .cpp が再コンパイル "
+                "されません。`chcp 65001` してから構成とビルドをやり直して "
+                "ください (既存の build は一度 --clean-first で作り直す)。"
+                "tools/update-and-build.ps1 は自動でそうします。\n"
+                "Non-English MSVC with Ninja is being configured from a non-UTF-8 "
+                "console (code page ${_ofdx_cp}). Header dependencies will not be "
+                "recorded, so header edits will not trigger rebuilds. Run "
+                "`chcp 65001`, then configure and build again (rebuild an "
+                "existing build directory once with --clean-first).")
+        endif()
+    endif()
+endif()
+
 # Qt6 Widgets is the only hard requirement (classic C++ Qt, NOT QML/Quick).
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 # Qt6::Network は「あれば使う」— 海洋データセットの直接ダウンロードだけに
