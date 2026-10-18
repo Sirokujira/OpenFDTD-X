@@ -77,32 +77,52 @@ void MiniPlot::clearYRange()
     update();
 }
 
-MiniPlot::View MiniPlot::computeView() const
+MiniPlot::AxisRange MiniPlot::autoRange(const QVector<MiniSeries> &series,
+                                        bool fixedY, double fixedYLo,
+                                        double fixedYHi, double xMargin)
 {
-    View v;
-    v.plot = QRectF(44, 10, width() - 56, height() - 40);
-
+    AxisRange r;
     double xLo = 1e300, xHi = -1e300, yLo = 1e300, yHi = -1e300;
-    for (const MiniSeries &s : m_series)
+    // 有限な値だけを範囲に入れる。NaN はもともと min/max の比較で素通り
+    // していたので結果は同じ。±inf を入れると範囲が無限大になり、目盛が
+    // inf になって点も描けなくなる (従来は壊れた図になっていた)。
+    for (const MiniSeries &s : series)
         for (const QPointF &pt : s.pts) {
-            xLo = std::min(xLo, pt.x()); xHi = std::max(xHi, pt.x());
-            yLo = std::min(yLo, pt.y()); yHi = std::max(yHi, pt.y());
+            const bool fx = std::isfinite(pt.x());
+            const bool fy = std::isfinite(pt.y());
+            if (fx) { xLo = std::min(xLo, pt.x()); xHi = std::max(xHi, pt.x()); }
+            if (fy) { yLo = std::min(yLo, pt.y()); yHi = std::max(yHi, pt.y()); }
+            r.hasX = r.hasX || fx;
+            r.hasY = r.hasY || fy;
+            r.hasData = r.hasData || (fx && fy);
         }
-    if (xLo > xHi) { xLo = 0; xHi = 1; }
-    if (m_fixedY) { yLo = m_yLo; yHi = m_yHi; }
+    if (!r.hasX) { xLo = 0; xHi = 1; }
+    if (fixedY) { yLo = fixedYLo; yHi = fixedYHi; }
+    // y にデータが無いと番兵 (1e300 / -1e300) が残り、下の 8% の余白が反転した
+    // 幅に掛かって ±1e300 級の目盛になっていた。x と同じく 0〜1 を既定にする
+    else if (!r.hasY) { yLo = 0; yHi = 1; }
     if (yLo >= yHi) { yLo -= 0.5; yHi += 0.5; }
     if (xLo >= xHi) { xLo -= 0.5; xHi += 0.5; }
     // x 方向の余白 (既定 0 = 従来どおり)。端にある点 (動作点のマーカーなど)
     // が枠に重なって見えなくなるのを防ぐため、使う側が明示的に足す。
-    if (m_xMargin > 0.0) {
-        const double xPad = (xHi - xLo) * m_xMargin;
+    if (xMargin > 0.0) {
+        const double xPad = (xHi - xLo) * xMargin;
         xLo -= xPad; xHi += xPad;
     }
-    const double yPad = m_fixedY ? 0 : (yHi - yLo) * 0.08;
+    const double yPad = fixedY ? 0 : (yHi - yLo) * 0.08;
     yLo -= yPad; yHi += yPad;
+    r.xLo = xLo; r.xHi = xHi; r.yLo = yLo; r.yHi = yHi;
+    return r;
+}
 
-    if (m_zoomed) { xLo = m_zxLo; xHi = m_zxHi; yLo = m_zyLo; yHi = m_zyHi; }
-    v.xLo = xLo; v.xHi = xHi; v.yLo = yLo; v.yHi = yHi;
+MiniPlot::View MiniPlot::computeView() const
+{
+    View v;
+    v.plot = QRectF(44, 10, width() - 56, height() - 40);
+    const AxisRange r = autoRange(m_series, m_fixedY, m_yLo, m_yHi, m_xMargin);
+    v.xLo = r.xLo; v.xHi = r.xHi; v.yLo = r.yLo; v.yHi = r.yHi;
+    v.hasX = r.hasX; v.hasY = r.hasY; v.hasData = r.hasData;
+    if (m_zoomed) { v.xLo = m_zxLo; v.xHi = m_zxHi; v.yLo = m_zyLo; v.yHi = m_zyHi; }
     return v;
 }
 
@@ -130,11 +150,19 @@ void MiniPlot::paintEvent(QPaintEvent *)
         p.setPen(QPen(palette().midlight().color(), 1, Qt::DotLine));
         p.drawLine(QPointF(X(gx), plot.top()), QPointF(X(gx), plot.bottom()));
         p.drawLine(QPointF(plot.left(), Y(gy)), QPointF(plot.right(), Y(gy)));
+        // 目盛の数字はデータのある軸だけ。空の図に既定範囲 (0〜1) の数字を
+        // 出すと、データの範囲であるかのように見えてしまう。固定の y 範囲は
+        // 利用者が決めた意味のある値なので、データが無くても出す
         p.setPen(palette().text().color());
-        p.drawText(QRectF(X(gx) - 30, plot.bottom() + 2, 60, 12), Qt::AlignCenter,
-                   QString::number(m_xPow10 ? std::pow(10.0, gx) : gx, 'g', 4));
-        p.drawText(QRectF(0, Y(gy) - 6, plot.left() - 4, 12),
-                   Qt::AlignRight | Qt::AlignVCenter, QString::number(gy, 'g', 3));
+        if (v.hasX)
+            p.drawText(QRectF(X(gx) - 30, plot.bottom() + 2, 60, 12),
+                       Qt::AlignCenter,
+                       QString::number(m_xPow10 ? std::pow(10.0, gx) : gx,
+                                       'g', 4));
+        if (v.hasY || m_fixedY)
+            p.drawText(QRectF(0, Y(gy) - 6, plot.left() - 4, 12),
+                       Qt::AlignRight | Qt::AlignVCenter,
+                       QString::number(gy, 'g', 3));
     }
 
     // series — 拡大中は範囲外の点が枠の外へはみ出すのでクリップする
@@ -202,7 +230,7 @@ void MiniPlot::paintEvent(QPaintEvent *)
     }
 
     // ホバー読み値 (ドラッグ中は出さない — バンドと重なって読めない)
-    if (m_hover && !m_dragging && plot.contains(m_hoverPos)) {
+    if (m_hover && !m_dragging && v.hasData && plot.contains(m_hoverPos)) {
         // 最寄りの点 (ピクセル距離) を探す
         double best = 1e300;
         QPointF bestPt;
@@ -283,8 +311,9 @@ void MiniPlot::mouseReleaseEvent(QMouseEvent *e)
     }
     m_dragging = false;
     const QRect band = QRect(m_dragStart, e->pos()).normalized();
-    if (band.width() >= kMinDragPx && band.height() >= kMinDragPx) {
-        const View v = computeView();
+    const View v = computeView();
+    // データが無い図は拡大しても見るものが無い (既定範囲を拡大するだけ)
+    if (v.hasData && band.width() >= kMinDragPx && band.height() >= kMinDragPx) {
         const QRectF r = QRectF(band).intersected(v.plot);
         if (r.width() > 2 && r.height() > 2) {
             // ピクセル → データ。y は上下が反転している点に注意

@@ -132,6 +132,7 @@
 #include "acoustics/io/WavWriter.h"
 #include "acoustics/qt/QtAcousticAdapter.h"
 #include "tabs/TabHelpers.h"
+#include "widgets/MiniPlot.h"
 #include "acoustics/qt/AcousticReportBuilder.h"
 #include "acoustics/qt/AcousticResultModel.h"
 // 音源リスト → ソルバ波源 (feed) の反映本体。ofdx_selftest は GUI_SOURCES を
@@ -26399,6 +26400,144 @@ static void testComponentDomains()
 // ── Touchstone (S パラメータ) の読み書き ─────────────────────────────────────
 // 準拠ファイル (全行列) とカーネル出力 (test.snp = 第 1 列のみ) の両方を
 // 正しく読み分けること、2 ポートの列転置、位相の連続化と群遅延を検証する。
+// MiniPlot の軸範囲 (MiniPlot::autoRange)。空の図で番兵の初期値 (±1e300) から
+// 作った目盛が出ていた不具合の回帰防止。データがあるときの範囲は従来と
+// **完全に同じ値**であること (表示を 1 ピクセルも変えない) を、従来の計算を
+// そのまま写した参照実装との突き合わせで確かめる。
+static void testMiniPlotAxisRange()
+{
+    g_file = "miniplot-range";
+    using ofd::MiniPlot;
+    using ofd::MiniSeries;
+
+    // 修正前の computeView の計算 (ズームを除く) を逐語的に写したもの
+    struct Old { double xLo, xHi, yLo, yHi; };
+    auto oldRange = [](const QVector<MiniSeries> &series, bool fixedY,
+                       double fLo, double fHi, double xMargin) {
+        double xLo = 1e300, xHi = -1e300, yLo = 1e300, yHi = -1e300;
+        for (const MiniSeries &s : series)
+            for (const QPointF &pt : s.pts) {
+                xLo = std::min(xLo, pt.x()); xHi = std::max(xHi, pt.x());
+                yLo = std::min(yLo, pt.y()); yHi = std::max(yHi, pt.y());
+            }
+        if (xLo > xHi) { xLo = 0; xHi = 1; }
+        if (fixedY) { yLo = fLo; yHi = fHi; }
+        if (yLo >= yHi) { yLo -= 0.5; yHi += 0.5; }
+        if (xLo >= xHi) { xLo -= 0.5; xHi += 0.5; }
+        if (xMargin > 0.0) {
+            const double xPad = (xHi - xLo) * xMargin;
+            xLo -= xPad; xHi += xPad;
+        }
+        const double yPad = fixedY ? 0 : (yHi - yLo) * 0.08;
+        yLo -= yPad; yHi += yPad;
+        return Old{ xLo, xHi, yLo, yHi };
+    };
+    auto series = [](std::initializer_list<QPointF> pts) {
+        MiniSeries s;
+        for (const QPointF &p : pts) s.pts.push_back(p);
+        return s;
+    };
+    auto sane = [](const MiniPlot::AxisRange &r) {
+        return std::isfinite(r.xLo) && std::isfinite(r.xHi)
+            && std::isfinite(r.yLo) && std::isfinite(r.yHi)
+            && r.xLo < r.xHi && r.yLo < r.yHi
+            && std::fabs(r.xLo) < 10 && std::fabs(r.xHi) < 10
+            && std::fabs(r.yLo) < 10 && std::fabs(r.yHi) < 10;
+    };
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+
+    // ① 空の 3 形態 → 有限で小さな既定範囲、データ無しの印
+    const QVector<MiniSeries> none;
+    const QVector<MiniSeries> emptySeries{ MiniSeries(), MiniSeries() };
+    const QVector<MiniSeries> allBad{ series({ QPointF(nan, nan),
+                                               QPointF(inf, -inf),
+                                               QPointF(-inf, nan) }) };
+    for (const QVector<MiniSeries> *s : { &none, &emptySeries, &allBad }) {
+        const MiniPlot::AxisRange r = MiniPlot::autoRange(*s, false, 0, 1, 0.0);
+        check(sane(r), "miniplot: an empty plot gets a finite, small range "
+                       "(not the +-1e300 sentinels)");
+        check(!r.hasX && !r.hasY && !r.hasData,
+              "miniplot: an empty plot is reported as having no data");
+    }
+    {   // 修正前は y が番兵のまま反転し、±1e300 級になっていた (再現の確認)
+        const Old o = oldRange(none, false, 0, 1, 0.0);
+        check(std::fabs(o.yLo) > 1e299 && std::fabs(o.yHi) > 1e299,
+              "miniplot: (reference) the old code produced +-1e300-class "
+              "y ticks for an empty plot");
+    }
+
+    // ② 有限なデータでは従来と完全に同じ値 (== で比べる)
+    const QVector<QVector<MiniSeries>> finiteCases = {
+        { series({ QPointF(0, 1), QPointF(10, 3) }) },
+        { series({ QPointF(-2.5, -7), QPointF(0.1, 4.2), QPointF(3, 0) }),
+          series({ QPointF(1, 100) }) },
+        { series({ QPointF(5, 5) }) },                       // 1 点 (幅 0)
+        { series({ QPointF(0, 2), QPointF(1, 2) }) },        // y 一定
+        { series({ QPointF(3, 1), QPointF(3, 9) }) },        // x 一定
+        { series({ QPointF(1e-9, 1e9), QPointF(2e-9, -1e9) }) },
+        // NaN を含む系列 (従来も比較で素通りしていた) も同じ値
+        { series({ QPointF(0, nan), QPointF(1, 2), QPointF(nan, 5),
+                   QPointF(4, 3) }) },
+    };
+    const double margins[] = { 0.0, 0.05 };
+    for (const QVector<MiniSeries> &c : finiteCases)
+        for (double m : margins)
+            for (int fixed = 0; fixed < 2; ++fixed) {
+                const MiniPlot::AxisRange r =
+                    MiniPlot::autoRange(c, fixed != 0, -1.0, 2.0, m);
+                const Old o = oldRange(c, fixed != 0, -1.0, 2.0, m);
+                check(r.xLo == o.xLo && r.xHi == o.xHi
+                          && r.yLo == o.yLo && r.yHi == o.yHi,
+                      "miniplot: with finite data the range is bit-identical "
+                      "to the old computation");
+                check(r.hasX && r.hasY && r.hasData,
+                      "miniplot: finite data is reported as data");
+            }
+
+    // ③ ±inf を含むデータ → 有限な点だけで範囲を決める (従来は範囲が無限大)
+    {
+        const QVector<MiniSeries> mixed{ series({ QPointF(0, 1),
+                                                  QPointF(1, inf),
+                                                  QPointF(2, 3),
+                                                  QPointF(inf, 2) }) };
+        const MiniPlot::AxisRange r =
+            MiniPlot::autoRange(mixed, false, 0, 1, 0.0);
+        const QVector<MiniSeries> finiteOnly{ series({ QPointF(0, 1),
+                                                       QPointF(2, 3) }) };
+        const Old o = oldRange(finiteOnly, false, 0, 1, 0.0);
+        check(r.xLo == o.xLo && r.xHi == o.xHi && r.yLo == o.yLo
+                  && r.yHi == o.yHi,
+              "miniplot: +-inf points are left out of the range "
+              "(same as the finite points alone)");
+        check(!std::isfinite(oldRange(mixed, false, 0, 1, 0.0).yHi),
+              "miniplot: (reference) the old code made an infinite range");
+    }
+
+    // ④ 固定 y 範囲 + データ無し → y は固定値そのまま、x は既定、データ無し
+    {
+        const MiniPlot::AxisRange r =
+            MiniPlot::autoRange(none, true, -60.0, 0.0, 0.0);
+        check(r.yLo == -60.0 && r.yHi == 0.0,
+              "miniplot: a fixed y range is kept even without data");
+        check(r.xLo == 0.0 && r.xHi == 1.0 && !r.hasData,
+              "miniplot: no data -> default x range and no-data flag");
+    }
+
+    // ⑤ x だけ有限 (y がすべて NaN) → x は従来どおり、y は既定、点は無し
+    {
+        const QVector<MiniSeries> s{ series({ QPointF(2, nan),
+                                              QPointF(6, nan) }) };
+        const MiniPlot::AxisRange r = MiniPlot::autoRange(s, false, 0, 1, 0.0);
+        check(r.hasX && !r.hasY && !r.hasData,
+              "miniplot: x-only data has x but no plottable point");
+        check(r.xLo == 2.0 && r.xHi == 6.0
+                  && std::isfinite(r.yLo) && std::isfinite(r.yHi)
+                  && std::fabs(r.yLo) < 10 && std::fabs(r.yHi) < 10,
+              "miniplot: x-only data keeps the x range and a finite y range");
+    }
+}
+
 static void testTouchstone()
 {
     g_file = "touchstone";
@@ -27238,6 +27377,7 @@ int main(int argc, char *argv[])
     testAcousticAnalogyDialogKeys();
     testComponentDomains();
     testTouchstone();
+    testMiniPlotAxisRange();
 
     std::printf("%d files loaded, %d checks, %d failures\n",
                 loaded, g_checks, g_failures);

@@ -787,6 +787,10 @@ if(BUILD_TESTS)
         # 共有する文言生成なので、GUI を起こさず selftest から検証する
         src/tabs/TabHelpers.cpp
         src/tabs/TabHelpers.h
+        # MiniPlot の軸範囲 (MiniPlot::autoRange、静的な純関数) を検証する。
+        # Widget のインスタンスは作らないので QApplication は要らない
+        src/widgets/MiniPlot.cpp
+        src/widgets/MiniPlot.h
         tests/selftest.cpp)
     target_include_directories(ofdx_selftest PRIVATE src)
     target_link_libraries(ofdx_selftest PRIVATE Qt6::Widgets ofdx_acoustic_core)
