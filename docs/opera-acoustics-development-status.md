@@ -129,12 +129,21 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   で +27 (**11338**)、GUI の Runner を MPI で実際に走らせる統合テスト
   (ctest `kernel.runner_mpi`、22 checks) を追加、schemaVersion "1.1" の
   書き出し (負債 #2) で +8。
-  **現在値: `ofdx_selftest` = 24 files loaded, 11,455 checks, 0 failures /
-  `ctest` = 23 テスト, 0 failures** (2026-08-23、`USE_HDF5=ON` +
+  **2026-08-23 の値: `ofdx_selftest` = 24 files loaded, 11,455 checks,
+  0 failures / `ctest` = 23 テスト, 0 failures** (`USE_HDF5=ON` +
   実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
   `USE_HDF5=OFF` の既定ビルドでは 11,258)。
-- 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,
-  0 failures** (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
+  **現在値 (2026-10-18 実測、`USE_HDF5=ON` / カーネル無し):
+  `ofdx_selftest` = 24 files loaded, 11,367 checks, 0 failures /
+  `ctest` = 23 テスト 0 failures (checks 合計 1,911)**。
+  内訳の変化は負債 #5 (C API api_version 2) の `test_c_api` +242 (281 checks)、
+  負債 #6 (WAV ストリーミング読み) の `test_wav` +14 (66 checks)、
+  `ofdx-schema` への追加 +5 (13 checks — 版の更新で未知キーを失わないこと /
+  未知の将来版も読めること)。
+- 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1,900 checks,
+  0 failures** (2026-10-18 実測。残り 2 本は `roomac.fitzroy` 11 checks と
+  `kernel.runner_mpi`。従来の「15 テスト / 1292」はテスト追加を反映して
+  いない古い集計だった) (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
   `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
