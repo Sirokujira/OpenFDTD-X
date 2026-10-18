@@ -3546,6 +3546,39 @@ static void testAudioEditEngine()
         // 4800 + round(4410·160/147) − 480 = 9120
         check(std::llabs((long long)cc.sampleCount() - 9120) <= 1,
               "crossfade length after resampling");
+        // 変換できる fs 比なら error は空 (呼び出し側の失敗判定が誤爆しない)。
+        // 事前に入っていた文字列も消す (前回の失敗理由を持ち越さない)
+        {
+            std::string err = "stale";
+            const AudioBuffer ok = crossfadeConcat(a48, b441, 0.01, &err);
+            check(err.empty(), "crossfade convertible fs leaves error empty");
+            check(ok.sampleCount() == cc.sampleCount(),
+                  "crossfade with error arg gives the same result");
+        }
+        // 変換できない fs 比 (96001 Hz → 48000 Hz: 比 48000/96001 は素因数に
+        // 分けられず 1 段の上限 65536 を超える) では**結合しない**。b を
+        // a の fs のまま並べると音程・速度が黙ってずれる (約 2 倍速)。
+        // 整数 fs の実 WAV でも起こる比なので、非整数 fs だけの話ではない
+        {
+            const AudioBuffer b96001 =
+                generateSignal(SignalKind::Sine, 1000, 0, 0.1, 0.5, 96001.0);
+            std::string err;
+            const AudioBuffer bad = crossfadeConcat(a48, b96001, 0.01, &err);
+            check(!err.empty(), "crossfade unconvertible fs reports error");
+            check(err.find("96001") != std::string::npos,
+                  "crossfade error names the offending fs");
+            bool same = bad.sampleRateHz == a48.sampleRateHz &&
+                        bad.channelCount() == a48.channelCount() &&
+                        bad.sampleCount() == a48.sampleCount();
+            for (std::size_t c = 0; same && c < a48.channelCount(); ++c)
+                same = bad.channels[c] == a48.channels[c];
+            check(same, "crossfade unconvertible fs returns a bit-identical "
+                        "(no wrong-speed append)");
+            // error を受け取らない呼び出しでも誤速度の結合はしない
+            const AudioBuffer bad2 = crossfadeConcat(a48, b96001, 0.01);
+            check(bad2.sampleCount() == a48.sampleCount(),
+                  "crossfade unconvertible fs without error arg still refuses");
+        }
         // チャンネル数不一致は多い方に合わせ、モノは複製する
         AudioBuffer st2;
         st2.sampleRateHz = 1000.0;

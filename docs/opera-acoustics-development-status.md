@@ -89,7 +89,7 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
 その旨) を出し、指標表の直下に ST・STI・G の測定前提の注記を添える):
 `src/acoustics/qt/AcousticReportBuilder` (Widget 非依存) が実行済みの RIR 分析 + 歌声分析を一括 HTML (自己完結・外部参照なし) / CSV (`source` 列で系統を区別) にまとめる。入口はファイルメニュー「音響レポート出力…」(`MainWindow::exportAcousticReport`)。分析は再実行せず、未実行の系統は**「未実行」と明示** (絶対規則 5)。出力は現在時刻を含まず決定的 (同一入力 → 同一バイト列) で、selftest 19 checks (未実行明示 / 決定性 / HTML エスケープ / 校正オフセットの Absolute 限定) で検証。残り (ST 系 / G / 実測 STI / 校正ワークフロー) は別課題として継続 (要求 §3.2 / §4.3、仮定 §1/§2) |
 | 11 | 可聴化のリアルタイム再生が無い (A/B はドライ/ウェット WAV 書き出しのみ) | 切替比較に外部プレイヤーが必要 | Partitioned Convolution + 音声出力を将来課題として記録 (ADR-0005) |
-| 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。**2026-08-06 追補**: 1 段の上限 (L, M ≤ 4096) を超える比 (FDTD の格子刻み由来の端数 fs — 例 1201 Hz → 48000 Hz = 48000/1201) を多段カスケードで実現し、分割できない比 (fs が大きな素数) は 1 段で押し切る (max(L,M) ≤ 65536)。それも超える比だけをエラーにし、メッセージに実際の fs を入れる。他の fs 不一致箇所 (AudioEditEngine 等) への展開は別課題 |
+| 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。**2026-08-06 追補**: 1 段の上限 (L, M ≤ 4096) を超える比 (FDTD の格子刻み由来の端数 fs — 例 1201 Hz → 48000 Hz = 48000/1201) を多段カスケードで実現し、分割できない比 (fs が大きな素数) は 1 段で押し切る (max(L,M) ≤ 65536)。それも超える比だけをエラーにし、メッセージに実際の fs を入れる。**2026-10-18 追補**: 他の fs 不一致箇所への展開も確認した — 音響編集の連結 (`AudioEditEngine::crossfadeConcat`) とハイブリッド RIR (`HybridRir`) は既に同じ Resampler で変換していた。ただし連結は**変換できない比 (例: 96001 Hz → 48000 Hz、65537 Hz → 48000 Hz — 整数 fs の実 WAV でも起こる) で b を a の fs のまま黙って並べていた** (音程・速度がずれた波形を成功として返す)。失敗時は結合せず a を変更せずに返し、理由を error で返すよう修正し、編集タブの「連結」はバッファを差し替えずに理由をステータスへ出す (「SRC 変換」ボタンと同じ扱い)。selftest +6 checks (変換可能な比で error が空・前回理由を持ち越さない / 変換不能な比で error が fs を名指しし a をビット不変で返す / error を受け取らない呼び出しでも結合しない) |
 | 13 | ~~実音響ソルバーが存在しない (CI はモックのみ)~~ **ExternalFDTD / ExternalGeometric とも解消済み** (FDTD 2026-08-05 / 幾何音響 2026-08-06) | — | **ExternalFDTD の実ソルバーを [Sirokujira/OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics) (`ofdx_acoustic_fdtd`) として実装** (ADR-0007 契約準拠、C11、3D スタガード格子線形音響 FDTD、吸音率→インピーダンス境界、受音点ごとの `rir.wav`/`rir_<名前>.wav` 出力 = 一括可聴化の自動割当と噛み合う)。検証は解析解 (閉箱軸モード ±3%・管端反射 R=√(1−α) ±3%・直接音到達・剛壁エネルギー保存・Sabine 式) + 決定性 + 契約。同リポジトリ CI (3 OS + sanitize) green。GUI からはカーネルパス設定か `$OFDX_ACOUSTIC_SOLVER` でバイナリを指定する。本リポジトリの CI モック統合テストは契約の番人としてそのまま維持 (ADR-0007 §5)。GUI 入口は従来どおり `AcousticSolverTab` + `AcousticRunner` |
 | 14 | ~~フォルマント周波数推定 (F1/F2) が無い~~ **フォルマント推定は解消済み** (声区 (レジスター) 分析は将来課題) | (解消前: 歌手フォルマントは帯域エネルギー比のみで声楽的フィードバックの分解能が限定的だった) | **完了 (フォルマント)**: `src/acoustics/core/FormantEstimator` (LPC — 反エイリアス FIR + 1/5 間引きで内部 fs 9.6 kHz、p = 2 + round(fs/1000) = 12、プリエンファシス 0.97 + ハミング窓、Levinson-Durbin、Durand-Kerner 根 (決定的初期値・乱数不使用))。YIN の有声判定フレームのみ推定し、F ≥ 90 Hz・帯域幅 ≤ 400 Hz の極を昇順に F1/F2/F3、代表値は有効フレームの時間中央値 (MetricValue)。`VocalAnalysisTab` に F1/F2/F3 中央値 + 軌跡 MiniPlot、CSV/JSON 出力に追加。検証は `tests/acoustics/test_formant.cpp` (合成母音 ±10% — `docs/opera-acoustics-validation.md` §12)。診断的結論の禁止 (ADR-0006) は維持 — 共鳴周波数という物理量のみを報告する。**声区分析は引き続き将来課題** |
 
@@ -134,12 +134,13 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
   `USE_HDF5=OFF` の既定ビルドでは 11,258)。
   **現在値 (2026-10-18 実測、`USE_HDF5=ON` / カーネル無し):
-  `ofdx_selftest` = 24 files loaded, 11,367 checks, 0 failures /
+  `ofdx_selftest` = 24 files loaded, 11,373 checks, 0 failures /
   `ctest` = 23 テスト 0 failures (checks 合計 1,911)**。
   内訳の変化は負債 #5 (C API api_version 2) の `test_c_api` +242 (281 checks)、
   負債 #6 (WAV ストリーミング読み) の `test_wav` +14 (66 checks)、
   `ofdx-schema` への追加 +5 (13 checks — 版の更新で未知キーを失わないこと /
-  未知の将来版も読めること)。
+  未知の将来版も読めること)、音響編集の連結が変換できない fs 比で黙って
+  誤速度に結合しないこと (負債 #12 の取りこぼし) +6。
 - 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1,900 checks,
   0 failures** (2026-10-18 実測。残り 2 本は `roomac.fitzroy` 11 checks と
   `kernel.runner_mpi`。従来の「15 テスト / 1292」はテスト追加を反映して
@@ -1214,8 +1215,9 @@ Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通
    (負債 #13)、声区分析 (負債 #14 の残り — フォルマント推定は解消済み)、
    旧フェーズ4 計画分 (負債 #10 の残り — レポート出力は解消済み、
    ST 系 / G / 実測 STI / 校正ワークフローが継続)。リサンプリング
-   (負債 #12) は解消済み (可聴化経路のみ — AudioEditEngine 等への展開は
-   別課題)。
+   (負債 #12) は解消済み (可聴化に加え、音響編集の連結・ハイブリッド RIR も
+   同じ Resampler で変換済み。2026-10-18 に連結の「変換できない比で黙って
+   誤速度に結合する」取りこぼしを修正)。
 
 ### 光タブ: S パラメータの Touchstone / CSV 出力を配線 (2026-08-09)
 
