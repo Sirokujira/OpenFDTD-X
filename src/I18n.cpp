@@ -1096,10 +1096,17 @@ void I18n::loadTables() {
     add("aur_dry_wave", "ドライ (入力)", "Dry (input)");
     add("aur_wet_wave", "ウェット (出力)", "Wet (output)");
     add("aur_playback_note",
-        "アプリ内での再生は未対応です。書き出した WAV を外部プレイヤーで"
-        "ドライ音源と聴き比べてください。",
-        "In-app playback is not supported. Compare the exported WAV with the "
-        "dry source in an external audio player.");
+        "アプリ内での再生は未対応です。▶ ボタンはこの実行の WAV を外部"
+        "プレイヤーで開きます。音源の前処理 (トリム / HPF / ゲイン) を掛けた"
+        "場合、ドライは元ファイルではなく実際に畳み込んだもの (ウェットの"
+        "隣に「…_dry.wav」として書き出す) を開きます。元ファイルと比べると"
+        "部屋の響きの差に前処理の差まで混ざって聞こえるためです。",
+        "In-app playback is not supported. The play buttons open this run's "
+        "WAV files in an external player. When source pre-processing (trim / "
+        "HPF / gain) is applied, the dry button opens the signal that was "
+        "actually convolved (written next to the wet file as \"..._dry.wav\") "
+        "instead of the original file, because comparing with the original "
+        "would mix the pre-processing difference into the room difference.");
 
     // ev viewer
     add("ev_backend", "表示バックエンド", "Viewer backend");

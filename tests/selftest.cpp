@@ -4144,6 +4144,114 @@ static void testAudioEditEngine()
                   QString::fromStdString(dryPath),
                   QString::fromStdString(rirPath), outE, 0, bad).success(),
               "prep-conv: an out-of-range trim still renders the full source");
+
+        // ⑤ A/B 試聴用の前処理後ドライ (ADR-0005 決定 5)。前処理を掛けた
+        //    ときだけ「実際に畳み込んだドライ」を書き出し、元ファイルと
+        //    比べて前処理の差が混ざるのを防ぐ。利用者の音源は上書きしない。
+        check(ofd::tabhelp::preppedDryPathFor(dir.filePath("hall.wav"))
+                  == dir.filePath("hall_dry.wav"),
+              "ab-dry: the dry for A/B sits next to the wet as <name>_dry.wav");
+        check(ofd::tabhelp::preppedDryPathFor(dir.filePath("a.b.wav"))
+                  == dir.filePath("a.b_dry.wav"),
+              "ab-dry: only the last extension is replaced");
+
+        const QString wetF = dir.filePath("f.wav");
+        const QString dryF = ofd::tabhelp::preppedDryPathFor(wetF);
+        bool written = true;
+        // 恒等の前処理 → 元ファイルがそのまま「畳み込んだドライ」なので書かない
+        check(ofd::tabhelp::convolveWithPrep(
+                  QString::fromStdString(dryPath),
+                  QString::fromStdString(rirPath), wetF, 0,
+                  ofd::audioedit::SourcePrep(), nullptr, nullptr, nullptr,
+                  nullptr, nullptr, dryF, &written).success(),
+              "ab-dry: identity run succeeds");
+        check(!written && !QFileInfo::exists(dryF),
+              "ab-dry: identity pre-processing writes no extra dry file");
+
+        // ゲイン +6.02 dB → 書いたドライは元の 2 倍 (畳み込みに使った値そのもの)
+        written = false;
+        check(ofd::tabhelp::convolveWithPrep(
+                  QString::fromStdString(dryPath),
+                  QString::fromStdString(rirPath), wetF, 0, g, nullptr,
+                  nullptr, nullptr, nullptr, nullptr, dryF, &written).success(),
+              "ab-dry: gain run succeeds");
+        check(written && QFileInfo::exists(dryF),
+              "ab-dry: pre-processing writes the convolved dry");
+        const AcousticResult<AudioBuffer> wd = readWavFile(dryF.toStdString());
+        const AudioBuffer expect = ofd::audioedit::prepareSource(dryBuf, g);
+        check(wd.success(), "ab-dry: the written dry is a readable WAV");
+        if (wd.success()) {
+            const AudioBuffer &b = wd.value();
+            check(b.sampleRateHz == fs,
+                  "ab-dry: the dry keeps the source sample rate");
+            check(b.channelCount() == expect.channelCount()
+                      && b.sampleCount() == expect.sampleCount(),
+                  "ab-dry: the dry has the convolved layout and length");
+            double maxErr = 0.0;
+            if (b.channelCount() == expect.channelCount()
+                && b.sampleCount() == expect.sampleCount())
+                for (std::size_t c = 0; c < b.channelCount(); ++c)
+                    for (std::size_t i = 0; i < b.sampleCount(); ++i)
+                        maxErr = std::max(maxErr,
+                            std::fabs(b.channels[c][i] - expect.channels[c][i]));
+            // Float32 で書くので丸め誤差は 2^-24 程度 (振幅 0.5 で ~3e-8)
+            check(maxErr < 1e-6,
+                  "ab-dry: the dry equals the pre-processed source "
+                  "(not the original file)");
+        }
+
+        // トリム → 書いたドライも切り出した長さ
+        written = false;
+        check(ofd::tabhelp::convolveWithPrep(
+                  QString::fromStdString(dryPath),
+                  QString::fromStdString(rirPath), wetF, 0, t, nullptr,
+                  nullptr, nullptr, nullptr, nullptr, dryF, &written).success()
+                  && written,
+              "ab-dry: trim run writes the dry");
+        const AcousticResult<AudioBuffer> wt = readWavFile(dryF.toStdString());
+        check(wt.success()
+                  && wt.value().sampleCount()
+                         == ofd::audioedit::prepareSource(dryBuf, t)
+                                .sampleCount(),
+              "ab-dry: the trimmed dry has the trimmed length");
+
+        // 入力のドライと同じパスを指しても上書きしない (利用者の音源を守る)
+        const QByteArray dryBefore = fileBytes(QString::fromStdString(dryPath));
+        written = true;
+        check(ofd::tabhelp::convolveWithPrep(
+                  QString::fromStdString(dryPath),
+                  QString::fromStdString(rirPath), dir.filePath("h.wav"), 0, g,
+                  nullptr, nullptr, nullptr, nullptr, nullptr,
+                  QString::fromStdString(dryPath), &written).success(),
+              "ab-dry: a clashing path does not fail the run");
+        check(!written && fileBytes(QString::fromStdString(dryPath)) == dryBefore,
+              "ab-dry: never overwrites the user's dry source");
+        // ウェットと同じパスでも書かない (結果を壊さない)
+        const QString wetI = dir.filePath("i.wav");
+        written = true;
+        check(ofd::tabhelp::convolveWithPrep(
+                  QString::fromStdString(dryPath),
+                  QString::fromStdString(rirPath), wetI, 0, g, nullptr,
+                  nullptr, nullptr, nullptr, nullptr, wetI, &written).success()
+                  && !written,
+              "ab-dry: never overwrites the wet result");
+        const AcousticResult<AudioBuffer> wi = readWavFile(wetI.toStdString());
+        const AcousticResult<AudioBuffer> wc = readWavFile(outC.toStdString());
+        check(wi.success() && wc.success()
+                  && wi.value().sampleCount() == wc.value().sampleCount()
+                  && wi.value().sampleCount() > expect.sampleCount(),
+              "ab-dry: the wet stays the convolution output, not the dry");
+
+        // 畳み込みが失敗した実行では書かない (失敗の副産物を残さない)
+        const QString dryJ = dir.filePath("j_dry.wav");
+        written = true;
+        check(!ofd::tabhelp::convolveWithPrep(
+                   QString::fromStdString(dryPath), dir.filePath("nope.wav"),
+                   dir.filePath("j.wav"), 0, g, nullptr, nullptr, nullptr,
+                   nullptr, nullptr, dryJ, &written).success(),
+              "ab-dry: a missing RIR fails the run");
+        check(!written && !QFileInfo::exists(dryJ),
+              "ab-dry: a failed run writes no dry file");
     }
 }
 
