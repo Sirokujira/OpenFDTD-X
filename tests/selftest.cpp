@@ -160,6 +160,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QDirIterator>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include "../src/io/OfdPreview.h"
 #include "../src/io/RefractiveIndexDb.h"
@@ -2154,48 +2155,89 @@ static void testOperaAcousticSettings()
         }
     }
 
-    // 5) schemaVersion (負債 #2): "1.1" = opera_analysis を含む書式。
-    //    serialize は opera_analysis を常に書くので常に "1.1" を書く。
+    // ── schemaVersion (docs/opera-acoustics-file-format.md §1) ──────────────
+    // 定義: "1.1" = acoustic.opera_analysis を含む / "1.0" = 含まない。
+    // 現行の serialize は opera_analysis を常に書くので出力は常に 1.1 になる。
+    // **読み手は版で分岐しない** (キーの有無だけで判定する) ことが要点で、
+    // 1.0 と書かれた同じ中身を読んでも結果が変わらないことまで見る。
     {
+        g_file = "ofdx-schema";
+        Project p;
+        const QByteArray out = OfdxIO::serialize(p);
+        check(out.contains("\"schemaVersion\": \"1.1\""),
+              "schema: opera_analysis を書くので 1.1 を名乗る");
+        check(!out.contains("\"schemaVersion\": \"1.0\""),
+              "schema: 1.0 は残っていない");
+        // 版は実際の中身から決まる (opera_analysis があれば 1.1)
         const QJsonObject root =
-            QJsonDocument::fromJson(OfdxIO::serialize(Project())).object();
-        check(root.value("schemaVersion").toString() == "1.1",
-              "schemaVersion: save writes 1.1");
+            QJsonDocument::fromJson(out).object();
         check(root.value("acoustic").toObject().contains("opera_analysis"),
-              "schemaVersion: 1.1 file indeed carries opera_analysis");
+              "schema: 1.1 を名乗る根拠 (opera_analysis) が実在する");
 
-        // 旧 "1.0" ファイルをロードしても再保存は "1.1" になる
-        // (既知キーは fresh が勝つ — ofdxExtra 差分に古い版が残らない)
-        QTemporaryFile old;
-        old.setFileTemplate(QDir::tempPath() + "/ofdx_ver_XXXXXX.ofdx");
-        if (old.open()) {
-            old.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
-                      "  \"future_key\": 42 }");
-            old.flush();
-            Project p6;
-            check(OfdxIO::load(old.fileName(), p6), "schemaVersion: 1.0 load");
-            const QJsonObject r2 =
-                QJsonDocument::fromJson(OfdxIO::serialize(p6)).object();
-            check(r2.value("schemaVersion").toString() == "1.1",
-                  "schemaVersion: resave upgrades 1.0 -> 1.1");
-            check(r2.value("future_key").toInt() == 42,
-                  "schemaVersion: unknown keys still preserved on upgrade");
+        // 旧 "1.0" ファイルを読んで書き戻すと 1.1 へ上がる (中身は保たれる)
+        QTemporaryFile legacy;
+        legacy.setFileTemplate(QDir::tempPath() + "/ofdx_schema_XXXXXX.ofdx");
+        if (legacy.open()) {
+            legacy.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"acoustic\","
+                         "  \"acoustic\": { \"opera_analysis\": {"
+                         "      \"enabled\": true, \"band_mode\": 2 } } }");
+            legacy.flush();
+            Project q;
+            check(OfdxIO::load(legacy.fileName(), q), "schema: 1.0 ファイルを読める");
+            check(q.operaAcoustic().enabled && q.operaAcoustic().bandMode == 2,
+                  "schema: 1.0 ファイルの中身が読める (版で分岐しない)");
+            check(OfdxIO::serialize(q).contains("\"schemaVersion\": \"1.1\""),
+                  "schema: 書き戻すと 1.1 へ上がる");
+
+            // 同じ中身を "1.1" と名乗るファイルにしても読み取り結果は同一
+            QTemporaryFile same;
+            same.setFileTemplate(QDir::tempPath() + "/ofdx_schema11_XXXXXX.ofdx");
+            if (same.open()) {
+                same.write("{ \"schemaVersion\": \"1.1\", \"domain\": \"acoustic\","
+                           "  \"acoustic\": { \"opera_analysis\": {"
+                           "      \"enabled\": true, \"band_mode\": 2 } } }");
+                same.flush();
+                Project r;
+                check(OfdxIO::load(same.fileName(), r), "schema: 1.1 ファイルを読める");
+                check(OfdxIO::serialize(r) == OfdxIO::serialize(q),
+                      "schema: 版が違っても中身が同じなら結果は同一 "
+                      "(読み手は版で分岐しない)");
+            }
+
+            // 1.0 → 1.1 の書き戻しでも、他ツールが書いた未知キーは
+            // 逐語で残る (版の更新が ofdxExtra 差分を壊さないこと)
+            QTemporaryFile extra;
+            extra.setFileTemplate(QDir::tempPath() + "/ofdx_schema_x_XXXXXX.ofdx");
+            if (extra.open()) {
+                extra.write("{ \"schemaVersion\": \"1.0\","
+                            "  \"domain\": \"acoustic\", \"future_key\": 42 }");
+                extra.flush();
+                Project s;
+                check(OfdxIO::load(extra.fileName(), s),
+                      "schema: 未知キーつき 1.0 ファイルを読める");
+                const QByteArray re = OfdxIO::serialize(s);
+                check(re.contains("\"schemaVersion\": \"1.1\""),
+                      "schema: 未知キーがあっても 1.1 へ上がる");
+                check(QJsonDocument::fromJson(re).object()
+                          .value("future_key").toInt() == 42,
+                      "schema: 版の更新で未知キーを失わない");
+            }
         }
 
-        // 未知の将来バージョンも読める範囲で読む (読み捨て — 分岐しない)
-        QTemporaryFile fut;
-        fut.setFileTemplate(QDir::tempPath() + "/ofdx_fut_XXXXXX.ofdx");
-        if (fut.open()) {
-            fut.write("{ \"schemaVersion\": \"9.9\", \"domain\": \"acoustic\","
-                      "  \"acoustic\": { \"opera_analysis\": {"
-                      "      \"enabled\": true, \"band_mode\": 1 } } }");
-            fut.flush();
-            Project p7;
-            check(OfdxIO::load(fut.fileName(), p7),
-                  "schemaVersion: future version still loads");
-            check(p7.operaAcoustic().enabled
-                      && p7.operaAcoustic().bandMode == 1,
-                  "schemaVersion: future version keys still read");
+        // 未知の将来バージョンも「読める範囲で読む」(版で分岐しないことの
+        // 裏返し — 知らない版を拒否しないこと)
+        QTemporaryFile future;
+        future.setFileTemplate(QDir::tempPath() + "/ofdx_schema_f_XXXXXX.ofdx");
+        if (future.open()) {
+            future.write("{ \"schemaVersion\": \"9.9\", \"domain\": \"acoustic\","
+                         "  \"acoustic\": { \"opera_analysis\": {"
+                         "      \"enabled\": true, \"band_mode\": 1 } } }");
+            future.flush();
+            Project t;
+            check(OfdxIO::load(future.fileName(), t),
+                  "schema: 未知の将来版でも読み込みは成功する");
+            check(t.operaAcoustic().enabled && t.operaAcoustic().bandMode == 1,
+                  "schema: 未知の将来版でもキーの中身は読める");
         }
     }
 }
@@ -3956,6 +3998,86 @@ static void testAudioEditEngine()
             ofd::Project o4;
             check(!o4.acoustic().multiSource,
                   "msrc-ofdx: missing key falls back to false (feed #1 only)");
+        }
+
+        // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —
+        //    ADR-0010 Decision 7) ──
+        // 追加キー: 全行が既定 (gain 1 / delay 0) ならキーを書かず、
+        // 戻せばバイト一致。キー名は音源一覧 (acoustic.sources) と別物で、
+        // 互いに干渉しないことも確かめる。
+        {
+            ofd::Project fp;
+            QString e5;
+            const QString p5 = dir.filePath("feeddrive.ofd");
+            const QString sc5 = dir.filePath("feeddrive.ofdx");
+            auto bytes5 = [&] {
+                QFile f(sc5);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(fp.save(p5, &e5), "feeds-ofdx: default saved");
+            const QByteArray base5 = bytes5();
+            check(!base5.contains("\"feeds\""),
+                  "feeds-ofdx: no rows writes no feeds key");
+
+            // 既定値だけの行を積んでもキーは書かない (絶対規則 2)
+            fp.acoustic().feedDrives = { {}, {} };
+            check(fp.save(p5, &e5), "feeds-ofdx: default rows saved");
+            check(bytes5() == base5,
+                  "feeds-ofdx: all-default rows stay byte-identical");
+
+            fp.acoustic().feedDrives = { { 0.5, 0.0 }, { 2.0, 0.005 } };
+            check(fp.save(p5, &e5), "feeds-ofdx: edited saved");
+            const QByteArray edited5 = bytes5();
+            check(edited5.contains("\"feeds\"")
+                  && edited5.contains("\"gain\": 0.5")
+                  && edited5.contains("\"delay_s\": 0.005"),
+                  "feeds-ofdx: editing writes gain and delay_s");
+            // 音源一覧 (acoustic.sources) は別キーとして残る — 契約の衝突
+            // (ソルバーが音源一覧を feed のゲインとして読む) を防ぐ番人
+            check(edited5.contains("\"sources\""),
+                  "feeds-ofdx: the source list keeps its own sources key");
+
+            ofd::Project rd5;
+            check(rd5.load(p5, &e5), "feeds-ofdx: reloaded");
+            check(rd5.acoustic().feedDrives.size() == 2
+                  && rd5.acoustic().feedDrives[0].gain == 0.5
+                  && rd5.acoustic().feedDrives[0].delaySec == 0.0
+                  && rd5.acoustic().feedDrives[1].gain == 2.0
+                  && rd5.acoustic().feedDrives[1].delaySec == 0.005,
+                  "feeds-ofdx: round-trips gain and delay per feed");
+
+            rd5.acoustic().feedDrives.clear();
+            check(rd5.save(p5, &e5), "feeds-ofdx: reverted saved");
+            check(bytes5() == base5,
+                  "feeds-ofdx: reverting restores byte-identical output");
+
+            // 手書きの範囲外値は契約の値域へクランプして読む
+            // (ソルバーが非零終了する .ofdx を GUI が作らない)
+            {
+                QFile f(sc5);
+                check(f.open(QIODevice::ReadOnly), "feeds-ofdx: sidecar open");
+                QJsonObject root =
+                    QJsonDocument::fromJson(f.readAll()).object();
+                f.close();
+                QJsonObject acObj = root["acoustic"].toObject();
+                acObj["feeds"] = QJsonArray{
+                    QJsonObject{ {"gain", 5000.0}, {"delay_s", -1.0} } };
+                root["acoustic"] = acObj;
+                QFile w(sc5);
+                check(w.open(QIODevice::WriteOnly), "feeds-ofdx: sidecar write");
+                w.write(QJsonDocument(root).toJson());
+                w.close();
+                ofd::Project cl;
+                check(cl.load(p5, &e5), "feeds-ofdx: clamped reload");
+                check(cl.acoustic().feedDrives.size() == 1
+                      && cl.acoustic().feedDrives[0].gain == 1000.0
+                      && cl.acoustic().feedDrives[0].delaySec == 0.0,
+                      "feeds-ofdx: out-of-range values clamp to the contract");
+            }
+
+            ofd::Project o5;
+            check(o5.acoustic().feedDrives.isEmpty(),
+                  "feeds-ofdx: missing key means every feed at gain 1 / delay 0");
         }
 
         // 旧ファイル (source_wav 無し) は既定値のまま
@@ -6935,6 +7057,193 @@ static void testRunGating()
               "avail: bellhop GPU maps to the bellhopcuda binary");
         check(bh.cuda == !Runner::resolvedSolverPath(bgc).isEmpty(),
               "avail: bellhop cuda tracks the bellhopcuda binary");
+    }
+
+    // ── カーネル引数 (solverArguments / postArguments) ────────────────────
+    // 本家 CLI の引数規約との整合 (OpenFDTD src/*_Main.c|.cu の args()):
+    //   ofd / ofd_mpi        : [-n <thread>] <datafile>
+    //   ofd_cuda / _cuda_mpi : [-gpu|-cpu] [-device <n>] <datafile> — -n は無い
+    // CUDA 版に -n を渡すと未知の引数として入力ファイル名に取り違えられる
+    // ので GPU 系エンジンでは渡さない。MPI 系は mpiexec 側の -n <process> とは
+    // 別にカーネルへ -n <thread> を渡す (ofd_mpi は OpenMP スレッド数を受ける)。
+    {
+        RunConfig c;
+        c.kernel = Kernel::FDTD;
+        c.threads = 6;
+        const QString in = QStringLiteral("/work/dipole.ofd");
+        c.engine = Engine::CPU;
+        check(Runner::solverArguments(c, in) == QStringList({ "-n", "6", in }),
+              "args: CPU passes -n <thread> and the input");
+        c.engine = Engine::CPU_MPI;
+        check(Runner::solverArguments(c, in) == QStringList({ "-n", "6", in }),
+              "args: CPU+MPI passes -n <thread> to the kernel "
+              "(mpiexec adds its own -n <process>)");
+        c.engine = Engine::GPU;
+        check(Runner::solverArguments(c, in) == QStringList({ in }),
+              "args: GPU omits -n (ofd_cuda has no thread option)");
+        c.engine = Engine::GPU_MPI;
+        check(Runner::solverArguments(c, in) == QStringList({ in }),
+              "args: GPU+MPI omits -n (ofd_cuda_mpi has no thread option)");
+        // 同じ規約は姉妹カーネル (orcwa / obpm) にも適用される
+        c.kernel = Kernel::BPM;
+        c.engine = Engine::GPU;
+        check(Runner::solverArguments(c, in) == QStringList({ in }),
+              "args: obpm_cuda omits -n");
+        c.kernel = Kernel::RCWA;
+        c.engine = Engine::CPU;
+        check(Runner::solverArguments(c, in) == QStringList({ "-n", "6", in }),
+              "args: orcwa takes -n");
+        // スレッド数 0 以下は 1 に丸める (カーネル側の args() と同じ下限)
+        c.threads = 0;
+        check(Runner::solverArguments(c, in).value(1) == QLatin1String("1"),
+              "args: thread count is clamped to >= 1");
+        c.threads = 6;
+        // bellhopcxx / bellhopcuda は拡張子を除いたケース名だけ
+        c.kernel = Kernel::Bellhop;
+        c.engine = Engine::CPU;
+        check(Runner::solverArguments(c, "/work/case1.env")
+                  == QStringList({ "case1" }),
+              "args: bellhopcxx takes the bare case name");
+        c.engine = Engine::GPU;
+        check(Runner::solverArguments(c, "/work/case1.env")
+                  == QStringList({ "case1" }),
+              "args: bellhopcuda takes the bare case name too");
+        // ポスト: -n <thread> [-html] <datafile>。エンジンに依らない
+        // (ofd_post に GPU / MPI 版は無い)。
+        RunConfig pc;
+        pc.kernel = Kernel::FDTD;
+        pc.threads = 3;
+        check(Runner::postArguments(pc, in) == QStringList({ "-n", "3", in }),
+              "args: post passes -n and the input");
+        pc.evHtml = true;
+        check(Runner::postArguments(pc, in)
+                  == QStringList({ "-n", "3", "-html", in }),
+              "args: post adds -html only when requested");
+        pc.engine = Engine::GPU_MPI;
+        check(Runner::postArguments(pc, in)
+                  == QStringList({ "-n", "3", "-html", in }),
+              "args: post arguments ignore the engine");
+    }
+
+    // ── MPI ランチャの探索 (findMpiLauncher) ─────────────────────────────
+    // 管理者権限なしで MS-MPI を展開した PC では mpiexec が PATH に無いので、
+    // GUI 設定 → PATH → $MSMPI_BIN → 標準の場所 → カーネルディレクトリ
+    // (直下と bin/) の順に探索する。環境に依存しない部分 (設定と binaryDir)
+    // を検証する。PATH に本物の mpiexec がある環境 (CI の MPI ジョブ等) でも
+    // 成り立つように、PATH 側の結果を見て期待値を切り替える。
+    {
+        QTemporaryDir mdir;
+        if (mdir.isValid()) {
+            const auto touchExec = [](const QString &path) {
+                QDir().mkpath(QFileInfo(path).path());
+                QFile f(path);
+                f.open(QIODevice::WriteOnly);
+                f.close();
+                f.setPermissions(f.permissions() | QFileDevice::ExeOwner
+                                 | QFileDevice::ExeUser | QFileDevice::ExeGroup
+                                 | QFileDevice::ExeOther);
+            };
+            // カーネルと同居した mpiexec (binaryDir/bin/)。Windows は
+            // findExecutable が PATHEXT (.exe) を補うので両方の名前を置く
+            touchExec(mdir.path() + "/bin/mpiexec");
+            touchExec(mdir.path() + "/bin/mpiexec.exe");
+            const QString onPath =
+                QStandardPaths::findExecutable(QStringLiteral("mpiexec"));
+            const QString prevSetting = Runner::mpiLauncherSetting();
+            Runner::setMpiLauncherSetting(QString());
+            RunConfig kc;
+            kc.binaryDir = mdir.path();
+            const QString found = Runner::findMpiLauncher(kc);
+            check(onPath.isEmpty() ? found.startsWith(mdir.path())
+                                   : found == onPath,
+                  "mpi: launcher found next to the kernel (binaryDir/bin) "
+                  "when PATH has none, PATH wins otherwise");
+            // 検索ディレクトリを与えなければ、PATH に無い限り見つからない
+            // (偽の mpiexec で「使える」と言わない)
+            RunConfig none;
+            check(onPath.isEmpty() ? !Runner::findMpiLauncher(none)
+                                          .startsWith(mdir.path())
+                                   : true,
+                  "mpi: a temp dir outside the search list is not consulted");
+            // GUI 設定は PATH より優先
+            const QString explicitPath = mdir.path() + "/mpiexec-custom"
+#ifdef Q_OS_WIN
+                + ".exe";
+#else
+                ;
+#endif
+            touchExec(explicitPath);
+            Runner::setMpiLauncherSetting(explicitPath);
+            check(Runner::mpiLauncherSetting() == explicitPath,
+                  "mpi: launcher setting round-trips");
+            check(Runner::findMpiLauncher(kc) == explicitPath,
+                  "mpi: explicit launcher setting wins over PATH and "
+                  "the search dirs");
+            // 設定が実在しないファイルなら無視して探索を続ける
+            const QString dangling = mdir.path() + "/does-not-exist";
+            Runner::setMpiLauncherSetting(dangling);
+            const QString fallback = Runner::findMpiLauncher(kc);
+            check(!fallback.isEmpty() && fallback != dangling,
+                  "mpi: a dangling launcher setting is ignored");
+            Runner::setMpiLauncherSetting(QString());
+            check(Runner::mpiLauncherSetting().isEmpty(),
+                  "mpi: launcher setting cleared");
+            Runner::setMpiLauncherSetting(prevSetting);
+        }
+    }
+
+    // ── エンジン × ソルバー設定の仕様上できない組合せ ──────────────────────
+    // (Runner::engineUnsupportedReason)。実機で確認した事実:
+    //   orcwa_mpi / orcwa_cuda / orcwa_cuda_mpi は FDTD 専用で、rcwalayer 入力
+    //   (RCWA / FMM の有効な層スタック) ではメッシュ 0 のまま走って落ちる。
+    //   obpm_mpi / obpm_cuda_mpi は FDTD 専用で BPM を計算しない
+    //   (obpm_cuda は BPM 対応)。
+    {
+        const Engine all[] = { Engine::CPU, Engine::CPU_MPI, Engine::GPU,
+                               Engine::GPU_MPI };
+        const auto allEmpty = [&](const Project &pr) {
+            for (Engine e : all)
+                if (!Runner::engineUnsupportedReason(pr, e).isEmpty()) return false;
+            return true;
+        };
+        Project ep;
+        ep.setActiveDomain(Domain::EM);
+        check(allEmpty(ep), "spec: EM projects can use every engine variant");
+
+        ep.setActiveDomain(Domain::Optical);
+        OpticalOpts &eo = ep.optical();
+        eo.solver = OpticalSolver::RCWA;
+        eo.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                             RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                             RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        check(Runner::engineUnsupportedReason(ep, Engine::CPU).isEmpty(),
+              "spec: RCWA runs on orcwa (CPU)");
+        check(!Runner::engineUnsupportedReason(ep, Engine::CPU_MPI).isEmpty()
+              && !Runner::engineUnsupportedReason(ep, Engine::GPU).isEmpty()
+              && !Runner::engineUnsupportedReason(ep, Engine::GPU_MPI).isEmpty(),
+              "spec: RCWA refuses orcwa_mpi / orcwa_cuda / orcwa_cuda_mpi "
+              "(FDTD-only variants)");
+        eo.solver = OpticalSolver::FMM;
+        check(!Runner::engineUnsupportedReason(ep, Engine::GPU).isEmpty()
+              && Runner::engineUnsupportedReason(ep, Engine::CPU).isEmpty(),
+              "spec: FMM follows the RCWA rule (same kernel)");
+        eo.rcwaLayerList.clear();
+        check(allEmpty(ep),
+              "spec: without a valid layer stack orcwa runs FDTD, so every "
+              "variant is fine");
+        eo.solver = OpticalSolver::BPM;
+        check(Runner::engineUnsupportedReason(ep, Engine::GPU).isEmpty()
+              && Runner::engineUnsupportedReason(ep, Engine::CPU).isEmpty(),
+              "spec: BPM allows obpm (CPU) and obpm_cuda (GPU)");
+        check(!Runner::engineUnsupportedReason(ep, Engine::CPU_MPI).isEmpty()
+              && !Runner::engineUnsupportedReason(ep, Engine::GPU_MPI).isEmpty(),
+              "spec: BPM refuses the FDTD-only MPI variants");
+        eo.solver = OpticalSolver::FDTD;
+        check(allEmpty(ep), "spec: optical FDTD has no variant restriction");
+        ep.setActiveDomain(Domain::Underwater);
+        check(allEmpty(ep),
+              "spec: underwater has no variant-specific restriction here "
+              "(the missing MPI build is reported by checkAvailability)");
     }
 }
 

@@ -105,6 +105,23 @@ const bool s_i18n = [] {
     // 目盛の数値は Z0 正規化値。Ω と読み違えないよう Z0 倍した値も併記する
     ofd::I18n::reg("pp_smith_norm", "目盛は Z0 正規化値 (1 = %1 Ω)",
                    "Grid values are normalized to Z0 (1 = %1 Ω)");
+    // 目盛の種類。アドミタンス面はチャートを 180° 回したものなので、両方
+    // 出すと「イミッタンスチャート」になり、直列 (Z) と並列 (Y) の素子を
+    // 1 枚で追える
+    ofd::I18n::reg("ppb_smith_z",  "インピーダンス", "Impedance");
+    ofd::I18n::reg("ppb_smith_y",  "アドミタンス",   "Admittance");
+    ofd::I18n::reg("ppb_smith_zy", "両方 (イミッタンス)", "Both (immittance)");
+    ofd::I18n::reg("ppb_smith_grid_tip",
+        "目盛の種類。直列素子はインピーダンス面 (赤) の等抵抗円に沿って、"
+        "並列素子はアドミタンス面 (青) の等コンダクタンス円に沿って動きます。"
+        "軌跡そのものは目盛によらず同じです。",
+        "Grid type. Series elements move along the constant-resistance "
+        "circles of the impedance grid (red), shunt elements along the "
+        "constant-conductance circles of the admittance grid (blue). "
+        "The locus itself does not depend on this setting.");
+    ofd::I18n::reg("pp_smith_grid_legend",
+                   "目盛: 赤 = インピーダンス / 青 = アドミタンス",
+                   "Grid: red = impedance / blue = admittance");
     ofd::I18n::reg("ppb_freq_none_tip",
         "計算を実行すると <kernel>.log の給電点表がここに表示されます",
         "Run the solver to show the feed table from <kernel>.log here");
@@ -166,6 +183,18 @@ PlotPanel::PlotPanel(Project *project, QWidget *parent)
     btnRow->addWidget(m_btnFar);
     btnRow->addWidget(m_btnPost);
     // ポスト表モードの表選択と対数軸 (このモードのときだけ出す)
+    // スミスチャートの目盛の切り替え (既定はインピーダンスのみ = 従来の見た目)
+    m_smithGrid = new QComboBox(this);
+    m_smithGrid->addItem(I18n::tr("ppb_smith_z"));    // 0: インピーダンス
+    m_smithGrid->addItem(I18n::tr("ppb_smith_y"));    // 1: アドミタンス
+    m_smithGrid->addItem(I18n::tr("ppb_smith_zy"));   // 2: 両方 (イミッタンス)
+    m_smithGrid->setObjectName(QStringLiteral("smithGrid"));   // テストから引く
+    m_smithGrid->setToolTip(I18n::tr("ppb_smith_grid_tip"));
+    m_smithGrid->setVisible(false);
+    btnRow->addWidget(m_smithGrid);
+    connect(m_smithGrid, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { update(); });
+
     m_tableSel = new QComboBox(this);
     m_tableSel->setMinimumWidth(200);
     m_tableSel->setVisible(false);
@@ -342,6 +371,8 @@ void PlotPanel::updateModeButtons()
     m_btnPost->setEnabled(hasPostTables());
     m_btnPost->setToolTip(hasPostTables() ? QString()
                                           : I18n::tr("ppb_post_none_tip"));
+    // 目盛の切り替えはスミスチャートのときだけ意味がある
+    m_smithGrid->setVisible((m_mode == Smith) && hasFreqChar());
     // 表選択と対数軸はポスト表モードのときだけ意味がある
     const bool post = (m_mode == PostLog) && hasPostTables();
     m_tableSel->setVisible(post);
@@ -610,33 +641,58 @@ void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
     QColor gMinor = palette().text().color(); gMinor.setAlpha(50);
     QColor gMajor = palette().text().color(); gMajor.setAlpha(105);
 
+    // ── どの目盛を描くか (インピーダンス / アドミタンス / 両方) ────────────
+    // アドミタンス面は Γ_Y = −Γ_Z、つまり**チャートを中心まわりに 180° 回した
+    // もの**。円の中心を反転するだけで同じ式が使える (半径は変わらない)。
+    const int gridMode = m_smithGrid ? m_smithGrid->currentIndex() : 0;
+    const bool showZ = (gridMode != 1);
+    const bool showY = (gridMode != 0);
+    // Z だけ (既定) のときは従来どおり無彩色。Y を出すときは見分けが要るので
+    // 暖色 (Z) / 寒色 (Y) に分ける。市販のイミッタンスチャートと同じ配色で、
+    // 明暗どちらのテーマでも読める濃さにしてある。
+    QColor zMinor = gMinor, zMajor = gMajor;
+    QColor yMinor(60, 110, 200), yMajor(60, 110, 200);
+    if (gridMode != 0) {
+        zMinor = QColor(200, 70, 70);  zMinor.setAlpha(70);
+        zMajor = QColor(200, 70, 70);  zMajor.setAlpha(150);
+        yMinor.setAlpha(70);
+        yMajor.setAlpha(150);
+    }
+
     QPainterPath clip;
     clip.addEllipse(unit);
     p.save();
     p.setClipPath(clip);
     // 等抵抗円 (r 一定) は Γ = +1 で、等リアクタンス円弧 (x 一定) も Γ = +1 で
-    // 互いに接する。副目盛 → 主目盛の順に描いて主目盛を上に出す
-    auto arc = [&](const em::SmithCircle &g) {
-        if (g.valid)
-            p.drawEllipse(QPointF(c.x() + g.cx * R, c.y() - g.cy * R),
-                          g.radius * R, g.radius * R);
+    // 互いに接する。副目盛 → 主目盛の順に描いて主目盛を上に出す。
+    // mirror = true でアドミタンス側 (Γ → −Γ)。
+    auto arc = [&](const em::SmithCircle &g, bool mirror) {
+        if (!g.valid) return;
+        const double gx = mirror ? -g.cx : g.cx;
+        const double gy = mirror ? -g.cy : g.cy;
+        p.drawEllipse(QPointF(c.x() + gx * R, c.y() - gy * R),
+                      g.radius * R, g.radius * R);
     };
-    for (int pass = 0; pass < 2; ++pass) {
-        p.setPen(QPen(pass ? gMajor : gMinor, 1));
-        const double *rv = pass ? kMajor : kMinorR;
-        const int nr = pass ? int(sizeof(kMajor) / sizeof(*kMajor))
-                            : int(sizeof(kMinorR) / sizeof(*kMinorR));
-        for (int i = 0; i < nr; ++i)
-            arc(em::constantResistanceCircle(rv[i]));
-        const double *xv = pass ? kMajor : kMinorX;
-        const int nx = pass ? int(sizeof(kMajor) / sizeof(*kMajor))
-                            : int(sizeof(kMinorX) / sizeof(*kMinorX));
-        for (int i = 0; i < nx; ++i)
-            for (double sgn : { 1.0, -1.0 })
-                arc(em::constantReactanceCircle(sgn * xv[i]));
-    }
-    p.setPen(QPen(gMajor, 1));
-    p.drawLine(at(-1.0, 0.0), at(1.0, 0.0));  // 実軸 (x = 0)
+    auto drawGrid = [&](bool mirror, const QColor &minor, const QColor &major) {
+        for (int pass = 0; pass < 2; ++pass) {
+            p.setPen(QPen(pass ? major : minor, 1));
+            const double *rv = pass ? kMajor : kMinorR;
+            const int nr = pass ? int(sizeof(kMajor) / sizeof(*kMajor))
+                                : int(sizeof(kMinorR) / sizeof(*kMinorR));
+            for (int i = 0; i < nr; ++i)
+                arc(em::constantResistanceCircle(rv[i]), mirror);
+            const double *xv = pass ? kMajor : kMinorX;
+            const int nx = pass ? int(sizeof(kMajor) / sizeof(*kMajor))
+                                : int(sizeof(kMinorX) / sizeof(*kMinorX));
+            for (int i = 0; i < nx; ++i)
+                for (double sgn : { 1.0, -1.0 })
+                    arc(em::constantReactanceCircle(sgn * xv[i]), mirror);
+        }
+    };
+    if (showZ) drawGrid(false, zMinor, zMajor);
+    if (showY) drawGrid(true,  yMinor, yMajor);
+    p.setPen(QPen(showZ ? zMajor : yMajor, 1));
+    p.drawLine(at(-1.0, 0.0), at(1.0, 0.0));  // 実軸 (x = 0 かつ b = 0)
     p.restore();
 
     // ── 主目盛のラベル ────────────────────────────────────────────────────
@@ -649,30 +705,42 @@ void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
         lf.setPointSizeF(qMax(6.0, lf.pointSizeF() - 2.0));
         p.setFont(lf);
         const QFontMetricsF lm(lf);
-        p.setPen(palette().mid().color());
-        for (double r : kMajor) {
-            const QPointF q = at((r - 1.0) / (r + 1.0), 0.0);
-            const QString t = QString::number(r, 'g', 2);
-            p.drawText(QPointF(q.x() - lm.horizontalAdvance(t) / 2.0,
-                               q.y() + lm.height()), t);
-        }
-        for (double x : kMajor) {
-            for (double sgn : { 1.0, -1.0 }) {
-                const double xv = sgn * x;
-                const double den = 1.0 + xv * xv;
-                const double gre = (xv * xv - 1.0) / den;
-                const double gim = 2.0 * xv / den;
-                // 円の**内側**へ 13 px 入れる。外へ出すと右側の読み取り欄
-                // (readout) と重なる幅のときがある (side は幅で決まるため)
-                const double k = 1.0 - 13.0 / R;
-                const QPointF q = at(gre * k, gim * k);
-                const QString t = (sgn > 0 ? QStringLiteral("j")
-                                           : QStringLiteral("−j"))
-                                  + QString::number(x, 'g', 2);
+        // mirror = アドミタンス側。両方出すときは実軸上のラベル (r と g) が
+        // 同じ位置に来て重なるので、Z を軸の下・Y を軸の上へ振り分ける。
+        auto labels = [&](bool mirror, const QColor &col, double axisDy) {
+            p.setPen(col);
+            const double sg = mirror ? -1.0 : 1.0;
+            for (double r : kMajor) {
+                const QPointF q = at(sg * (r - 1.0) / (r + 1.0), 0.0);
+                const QString t = QString::number(r, 'g', 2);
                 p.drawText(QPointF(q.x() - lm.horizontalAdvance(t) / 2.0,
-                                   q.y() + lm.height() / 3.0), t);
+                                   q.y() + axisDy), t);
             }
-        }
+            for (double x : kMajor) {
+                for (double sgn : { 1.0, -1.0 }) {
+                    const double xv = sgn * x;
+                    const double den = 1.0 + xv * xv;
+                    const double gre = (xv * xv - 1.0) / den;
+                    const double gim = 2.0 * xv / den;
+                    // 円の**内側**へ 13 px 入れる。外へ出すと右側の読み取り欄
+                    // (readout) と重なる幅のときがある (side は幅で決まるため)
+                    const double k = 1.0 - 13.0 / R;
+                    const QPointF q = at(sg * gre * k, sg * gim * k);
+                    const QString t = (sgn > 0 ? QStringLiteral("j")
+                                               : QStringLiteral("−j"))
+                                      + QString::number(x, 'g', 2);
+                    p.drawText(QPointF(q.x() - lm.horizontalAdvance(t) / 2.0,
+                                       q.y() + lm.height() / 3.0), t);
+                }
+            }
+        };
+        // ラベルは**不透明**にする。目盛線と同じ半透明色を使うと、線の上に
+        // 重なったときに読めない (目盛線は薄くてよいが数字は読めないと困る)。
+        const QColor zLab = (gridMode == 0) ? palette().mid().color()
+                                            : QColor(170, 40, 40);
+        const QColor yLab = QColor(40, 80, 170);
+        if (showZ) labels(false, zLab, showY ? lm.height() : lm.height());
+        if (showY) labels(true,  yLab, showZ ? -4.0 : lm.height());
         p.setFont(keepLf);
     }
 
@@ -699,6 +767,15 @@ void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
         if (r.magnitude < bestMag) { bestMag = r.magnitude; best = i; }
     }
     if (!started) return;
+    // アドミタンス目盛を出すと目盛線が青系になり、accent (ドメイン色) の軌跡と
+    // 見分けにくい。下に地色の縁取りを敷いてから描く (色は変えずに浮かせる)。
+    if (showY) {
+        QPen halo(palette().base().color(), 5);
+        halo.setCapStyle(Qt::RoundCap);
+        halo.setJoinStyle(Qt::RoundJoin);
+        p.setPen(halo);
+        p.drawPath(locus);
+    }
     p.setPen(QPen(accent, 2));
     p.drawPath(locus);
     // 始点 (○) と終点 (●) — 掃引の向きが分かるように区別する
@@ -735,6 +812,19 @@ void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
                       pts[best].xin < 0 ? QStringLiteral("−")
                                         : QStringLiteral("+"),
                       QString::number(std::fabs(pts[best].xin), 'f', 2)));
+        // アドミタンス目盛を出しているときは Y も数値で添える (並列素子の
+        // 検討では G / B を直接読みたい)。Y = 1/Z なので Z = 0 では出さない。
+        if (showY) {
+            const double rr = pts[best].rin, xx = pts[best].xin;
+            const double den = rr * rr + xx * xx;
+            if (den > 0.0) {
+                const double gS = rr / den, bS = -xx / den;
+                line(QStringLiteral("  Y = %1 %2 j%3 mS")
+                         .arg(QString::number(gS * 1e3, 'f', 3),
+                              bS < 0 ? QStringLiteral("−") : QStringLiteral("+"),
+                              QString::number(std::fabs(bS) * 1e3, 'f', 3)));
+            }
+        }
         line(QStringLiteral("  |Γ| = %1  ∠%2°")
                  .arg(QString::number(r.magnitude, 'f', 4),
                       QString::number(r.phaseDeg, 'f', 1)));
@@ -751,6 +841,8 @@ void PlotPanel::paintSmith(QPainter &p, const QRectF &plot,
     p.setPen(palette().mid().color());
     line(I18n::tr("pp_smith_marks"));
     line(I18n::tr("pp_smith_norm").arg(QString::number(s.z0, 'g', 4)));
+    // 2 色を出しているときだけ、どちらがどちらかを添える
+    if (showZ && showY) line(I18n::tr("pp_smith_grid_legend"));
 
     // 1 給電点 = 1 ポートである旨 (S21 が無いことの説明)
     QFont f = p.font();

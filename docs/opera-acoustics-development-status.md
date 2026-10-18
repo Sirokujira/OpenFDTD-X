@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 0 | 事前調査・基準記録・ライセンス調査 | **完了** | `docs/opera-acoustics-existing-analysis.md` / `opera-acoustics-baseline.md` (selftest 1560 checks 実測) / `licensing-review.md` |
 | 1 | C++14 音響分析コア (RIR パイプライン + WAV I/O + テスト) | **完了** | `src/acoustics/core/` (RirAnalyzer ほか 9 モジュール)、`src/acoustics/io/` (WavReader/Writer)、`tests/acoustics/` 6 テスト + 生成器。検証 392 checks / 0 failures (`docs/opera-acoustics-validation.md`) |
-| 2 | GUI 統合 (C API / Qt アダプター / RirAnalysisTab / .ofdx / CI) | **実装中** | 済: CMake ターゲット分離 (`ofdx_acoustic_core` C++14 固定 / `ofdx_acoustic_c_api`)、C API 実装 + 純 C テスト (`test_c_api.c`)、`QtAcousticAdapter`、`OperaAcousticSettings`、`.ofdx opera_analysis` save/load、CI への ctest 追加。未: 下記 §2 |
+| 2 | GUI 統合 (C API / Qt アダプター / RirAnalysisTab / .ofdx / CI) | **完了 (2026-08-23)** | CMake ターゲット分離 (`ofdx_acoustic_core` C++14 固定 / `ofdx_acoustic_c_api`)、C API 実装 + 純 C テスト (`test_c_api.c`)、`QtAcousticAdapter`、`OperaAcousticSettings`、`.ofdx opera_analysis` save/load、CI への ctest 追加、`RirAnalysisTab` と MainWindow 統合、schemaVersion "1.1" 書き出し (§2 の 1〜6 をすべて消化) |
 | 3 | 歌声信号分析 (VocalAnalyzer: YIN F0 / ピッチ安定性 / ビブラート / LTAS / 重心 / HNR / H1–H8 / 帯域エネルギー / 歌手フォルマント比 / フォルマント F1–F3 (LPC — 負債 #14)) | **実装済み** | `src/acoustics/core/` VocalAnalyzer + FormantEstimator (C++14)、`VocalAnalysisTab`。定義: `docs/opera-acoustic-metrics.md` §10、ADR-0006 |
 | 4 | 可聴化 (ConvolutionEngine: 自前 radix-2 FFT + Overlap-Add、A/B = ドライ/ウェット WAV 書き出し) | **実装済み** | `src/acoustics/core/` Fft / ConvolutionEngine、`AuralizationTab`、`.ofdx` `opera_analysis.auralization`。ADR-0005。旧フェーズ4 計画分 (ST 系 / G 絶対値 / 校正ワークフロー / レポート出力) は残課題へ移動 (§3 負債 #10) |
 | 5 | 外部音響ソルバー連携 (AcousticRunner QProcess 疎結合・AcousticBackend 5 値・出力契約・モックソルバー CI・AcousticFdtdEstimator) | **実装済み** | `src/acoustics/qt/AcousticRunner`、`AcousticSolverTab`、`.ofdx` `opera_analysis.solver`、CI モックソルバー統合テスト。ADR-0004 / ADR-0007 |
@@ -26,8 +26,18 @@
 4. **selftest 拡張**: `opera_analysis` の .ofdx ラウンドトリップ
    チェック追加 (チェック総数が 1560 から増えるため baseline 文書の
    数値更新もセット)。
-5. ~~**schemaVersion "1.1" 書き出し**~~ → **完了 (2026-08-16)**: save は
-   "1.1" を書く (`docs/opera-acoustics-file-format.md` §1、負債 #2)。
+5. ~~**schemaVersion "1.1" 書き出し**~~ → **完了** (2026-08-23)。
+   `OfdxIO::serialize` が**実際に書いた中身**から版を決める
+   (`acoustic.opera_analysis` があれば "1.1"、無ければ "1.0")。固定値に
+   しないのは、この関数が opera_analysis を出さない構成になったときに
+   版だけ残って嘘にならないようにするため。未知キーの書き戻し
+   (`ofdxMergeExtra`) の後に決めるので他ツールが足した分も反映される。
+   読み手は従来どおり版で分岐せずキーの有無で判定する
+   (`docs/opera-acoustics-file-format.md` §1)。selftest `ofdx-schema`
+   +13 checks (旧 1.0 ファイルを読んで書き戻すと 1.1 へ上がること、
+   同じ中身なら版が違っても読み取り結果が同一であること、版の更新で
+   他ツールの未知キーを失わないこと、未知の将来版 "9.9" でも読み込みが
+   成功してキーの中身が読めること)。
 6. ~~**calibration_offset_db の追加** (負債 #1)~~ → **完了**
    (`OperaAcousticSettings::calibrationOffsetDb` / `.ofdx`
    `calibration_offset_db` / `RirAnalysisTab` の入力欄 /
@@ -38,7 +48,7 @@
 | # | 内容 | 影響 | 対応方針 |
 |---|---|---|---|
 | 1 | ~~`calibrationOffsetDb` が `OperaAcousticSettings` / `.ofdx` / `QtAcousticAdapter::toAnalyzerConfig` に無い~~ **解消済み** | (解消前: GUI 経由で Absolute を選んでもオフセット 0 dB で絶対 SPL が dBFS のままだった) | **完了**: `OperaAcousticSettings::calibrationOffsetDb` (既定 0.0) + `.ofdx` `calibration_offset_db` (欠落時 0.0) + `RirAnalysisTab` の入力欄 (Absolute 時のみ有効) + `QtAcousticAdapter::toAnalyzerConfig` / `toVocalConfig` で **Absolute 以外は 0 を渡す**ゲート。selftest に往復 / 旧ファイル既定 / ゲート規則のチェックを追加 |
-| 2 | ~~save が `schemaVersion: "1.0"` を書く~~ **解消済み (2026-08-16)** | (解消前: 1.1 ファイルの識別ができなかった。実害は小: 読み込みはキー有無判定) | **完了**: serialize は `opera_analysis` を常に書くので常に "1.1" を書く (`docs/opera-acoustics-file-format.md` §1 の定義どおり)。読み込みは従来どおりバージョンで分岐しない (キー有無判定) — 旧 "1.0" ファイルはそのまま読め、再保存で "1.1" に上がる (既知キーは fresh が勝つので ofdxExtra に古い版は残らない)。selftest +6 checks (書き出し値 / 1.0→1.1 昇格 / 昇格時の未知キー保全 / 未知の将来バージョンも読める) |
+| 2 | ~~save が `schemaVersion: "1.0"` を書く~~ **解消済み (2026-08-23)** | (解消前: 1.1 ファイルの識別ができない。実害は小で、読み込みは元よりキー有無判定) | **完了**: `OfdxIO::serialize` が出力の中身から版を決める (`acoustic.opera_analysis` があれば "1.1")。固定値にせず実際に書いた内容から決めるので、将来 opera_analysis を出さない構成になっても版が嘘にならない。読み手は従来どおり版で分岐しない。selftest `ofdx-schema` +13 checks (版の更新で未知キーを失わないこと、未知の将来版 "9.9" でも読めることを追加) |
 | 3 | ~~selftest に `opera_analysis` ラウンドトリップ未追加~~ **解消済み (2026-08-15)** | (解消前: 永続化の回帰をテストが検出しない) | **完了**: 実際には往復テスト (`testOperaAcousticSettings` §2) は既に存在しており、この記述は古かった。ただし**全 25 フィールド中 20 しか設定しておらず**、後から追加された ESS 掃引逆畳み込みの 5 フィールド (`sweepDeconvolve`/`sweepStartHz`/`sweepEndHz`/`sweepSec`/`sweepHarmonics`) が往復・旧ファイル既定値の両方から漏れていた (シリアライズ実装自体は正しかったことを確認)。構造体と代入群の突き合わせで検出し、往復 (+3 checks) と旧ファイル既定値 (+1 check) を追加して全 25 フィールドを網羅した |
 | 4 | ~~`.ofdx` の未知キーが保存時に消える (既知フィールド再構成方式)~~ **解消済み (2026-08-15)** | (解消前: 他ツールとの .ofdx 共有で相手のキーを失った) | **完了**: ADR-0003 案B を実装。ロード時に「ファイル − 再シリアライズ結果」の差分を `Project::ofdxExtra()` に保持し、save がマージして書き戻す。既知キーは常に新しい値が勝つ (差分方式なので stale 復活なし)。未知キーの無いファイルでは出力バイト不変。selftest 13 checks (往復逐語保全 / fresh 優先 / バイト不変 / 繰り返し安定)。詳細は ADR-0003 の Update 節 |
 | 5 | ~~C API が広帯域 7 指標のみ (帯域別結果・反射リスト・warning 文字列・Early/Late は未公開)~~ **解消済み (2026-08-16)** | (解消前: 外部カーネルからの利用範囲が限定的だった) | **完了**: `api_version` を 2 に上げた。(a) `ofdx_ac_metrics` へ early_late_50/80・st_early/st_late を**末尾追加** — バージョン 1 呼び出し側 (api_version=1 + 旧 struct_size = `offsetof(ofdx_ac_metrics, early_late_50)`) は引き続き受理し、旧レイアウト分のみ書く。(b) 可変長データ (帯域別指標・反射リスト・warning 文字列) は不透明ハンドル `ofdx_ac_result` + アクセサ関数で公開 — `ofdx_ac_analyze_rir_full` (config NULL = Compat6、band_set 5 種) / `band_count`・`band_info` (中心周波数・エッジ・filter_ok・INR)・`band_label`・`band_metrics` / `reflection_count`・`reflection` / `warning_count`・`warning` / `overall_quality` / `result_destroy`。out 構造体はすべて struct_size 検査つき (今後も末尾追加のみ)。ST は測定条件をデータから検証できないため生値+品質を返し (JSON と同じ方針)、3 値表示規則の適用は呼び出し側の責任とヘッダに明記。`test_c_api` 39 → 281 checks (v1 互換の番兵不変 / el50=D50/(1−D50) 恒等式 / FULL_ONLY と広帯域 API の同値 / 帯域別 T30 ±0.15 / エコー検出 / エラー系) — 純 C99 コンパイルのまま |
@@ -114,15 +124,17 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   (`USE_HDF5=OFF`)。G の基準 (負債 #10) の
   .ofdx 往復・旧ファイル既定・既定バイト不変・アダプタ配線で +22、
   一括レポートへの STI / G 取り込みで +10 (**11274 / 11170**)、
-  main マージ後 11283、ST 3 値表示規則 (要求 §3.2) で +28 (**11311**)、
-  schemaVersion "1.1" (負債 #2) で +7 (**11318**)。
-  `ctest` = **22 テスト / 合計 1911 checks, 0 failures**
-  (`acoustics.strength` 89 checks を新規追加、`test_wav` はストリーミング
-  読み (負債 #6) の検証 +14 で 66 checks、`test_c_api` は api_version 2
-  (負債 #5) の検証 +242 で 281 checks)。
-- 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1900 checks,
-  0 failures** (残り 1 本は `roomac.fitzroy` 11 checks。従来の
-  「15 テスト / 1306」はテスト追加を反映していない古い集計だった) (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
+  main マージ後 11283、ST 3 値表示規則 (要求 §3.2) で +28 (**11311**)。
+  その後 Windows での CUDA+MPI 対応 (Runner の起動規約・エンジン可用性判定)
+  で +27 (**11338**)、GUI の Runner を MPI で実際に走らせる統合テスト
+  (ctest `kernel.runner_mpi`、22 checks) を追加、schemaVersion "1.1" の
+  書き出し (負債 #2) で +8。
+  **現在値: `ofdx_selftest` = 24 files loaded, 11,455 checks, 0 failures /
+  `ctest` = 23 テスト, 0 failures** (2026-08-23、`USE_HDF5=ON` +
+  実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
+  `USE_HDF5=OFF` の既定ビルドでは 11,258)。
+- 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,
+  0 failures** (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
   `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
@@ -1076,15 +1088,119 @@ H5 ビューアで「時間範囲の入力が再生に反映されない」「�
 減らない** (面の位置と標本格子の噛み合わせで上下する) ため、判定は
 単調性ではなく「N ≥ 4 で 1% 未満」にしてある。
 
+### Windows での CUDA+MPI 対応と Runner の実行規約 (2026-08-21)
+
+管理者権限の無い Windows PC (RTX 3060, MSVC 14.36) で CUDA 13.1 (NVIDIA redist
+zip を展開) と MS-MPI 10.1 (conda-forge パッケージを展開) をユーザー空間に
+用意し、OpenFDTD / OpenRCWA / OpenBPM の **4 構成 × 3 リポジトリ = 12 本**の
+カーネルをすべてビルドして実機で動かした。手順と結果は
+`docs/windows-cuda-mpi-build.md`。GUI 側の変更:
+
+- **`Runner::findMpiLauncher(cfg)`** — PATH だけでなく GUI 設定
+  (`mpiLauncherSetting`、カーネルパス設定ダイアログの「並列実行 (MPI)」行) →
+  `$MSMPI_BIN` → `C:\Program Files\Microsoft MPI\Bin` → 各カーネルディレクトリ
+  (直下と `bin/`) を探索し、見つけた mpiexec のフォルダを子プロセスの PATH に
+  足す (システムに `msmpi.dll` が無くても `<kernel>_mpi.exe` が起動する)。
+- **`Runner::solverArguments` / `postArguments`** — CUDA 版 (`ofd_cuda` 等) は
+  `-n <thread>` を受け付けない (未知の引数として入力名に取り違える) ので
+  GPU 系エンジンには渡さない。純関数にして selftest で検証 (+13 checks)。
+- **`Runner::engineUnsupportedReason`** — 実機で判明した「仕様上できない」
+  組合せ: orcwa の MPI / CUDA 版は FDTD 専用で RCWA / FMM (`rcwalayer`) を
+  計算できない (メッシュ 0 のまま走って落ちる)、obpm の MPI 版は FDTD 専用で
+  BPM を計算しない (`obpm_cuda` は BPM 対応)。`updateEngineItems` が選択肢を
+  理由つきで無効化し、`runSimulation` 直前にも再確認、`onProjectChanged` は
+  「ドメイン:光ソルバー:層スタック有効」の署名が変わったときだけ再評価する
+  (+9 checks)。
+- **`openfdtd_x --check-kernels`** — 各カーネル × エンジンの解決パス・mpiexec
+  の所在・使えない理由を画面なしで表示する診断 CLI。
+- CMake: MSVC の `/utf-8` を全ターゲットへ (テスト生成ツールに無く、日本語
+  ロケール (CP932) の PC で C2001 になっていた — 英語ロケールの CI では警告止まり)。
+
+カーネル側 (各リポジトリのローカルブランチ、未 push):
+
+- 3 リポジトリ共通: `CMAKE_CUDA_ARCHITECTURES` の 60 固定を「利用者指定を
+  尊重、未指定なら nvcc<13 → 60 / nvcc≥13 → 75」へ (CUDA 13 は sm_60/70 を
+  打ち切った)。MSVC に無い `pthread` / `m` の直リンク除去、`/utf-8` を
+  CUDA には `-Xcompiler` で中継、MPI / CUDA 実行ファイルにも `/STACK:16MB`。
+- OpenFDTD: **HDM (既定) で `ofd_cuda` / `ofd_cuda_mpi` が HDF5 スナップショット
+  の device メモリを host から読んで 0xC0000005 で落ちる**バグを修正
+  (`snapshot_host_fields`)。`-cpu` / UM では出ないので GPU の無い CI は検出
+  できなかった。修正後、`ofd_mpi` (2 ランク) は CPU とビット一致、CUDA 系は
+  float の総和順序で収束履歴 6 桁目のみ差、インピーダンス表は一致。
+- OpenRCWA: MPI / CUDA 版の main が RCWA 入力を受けたら理由を出して終了。
+  GPU 版 RCWA テスト (gdstk + cuSOLVER + MAGMA) を `WITH_RCWA_LEGACY_TESTS`
+  で切り離し。`hdf5::hdf5` → `HDF5::HDF5`。
+- OpenRCWA `orcwa_cuda_mpi` / OpenBPM `obpm_mpi` / `obpm_cuda_mpi`: 並列 HDF5 の
+  集団操作を rank 0 だけが呼ぶ構造で **2 ランク以上でデッドロック**していた
+  (寸法も rank 0 のローカル NN で多ランクでは中身が正しくない)。**集団書き込みへの
+  作り替えで解決済み** (OpenRCWA PR #17 / OpenBPM PR #23)。手本は
+  `OpenRCWA/mpi/solve.c` — 全体配列の添字 (`g_Ni` / `w_i0` 群) で担当範囲を分けて
+  `H5FD_MPIO_COLLECTIVE` で書き、metadata 節は全 rank で作成して書き込みだけ
+  rank 0 に限定する。CUDA 版ではさらに `memcopy3_gpu()` を `if (io)` の外へ出す
+  必要がある (rank 0 だけコピーすると非 rank 0 が未初期化の host 配列を書く)。
+  検証は 1/2/3/4 ランクでの HDF5 全データセット突き合わせ (`obpm_mpi` は
+  1.9e-15、CUDA 系は 3.2e-07 = 単精度の差、インピーダンス表は完全一致)。
+
+検証: `ofdx_selftest` 24 files, **11,250 checks, 0 failures** (+27 — 引数規約 12、
+MPI ランチャ探索 6、仕様判定 9)、ctest 22/22。
+Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通った。
+
+**追補 (同日): 水中音響の GPU 版と、HDF5 の中身の突き合わせ。**
+
+- **bellhopcuda (水中音響) の GPU 版をビルドして検証**。CUDA の対象
+  アーキテクチャは同リポジトリが `native` (実機自動判定) なので追加設定は
+  不要だった (glm サブモジュールの取得は必須)。`bellhopcxx` (CPU) と
+  `bellhopcuda` (GPU) で `MunkB_Coh` を走らせ、`.shd` (4 MB) を同リポジトリ
+  同梱の `compare_shdfil.py` (ULP 単位) で突き合わせて**差分なし**。
+  `--check-kernels` で GUI からも GPU エンジンが「usable」になった。
+  MPI 版は存在しないので、その旨は従来どおり `checkAvailability` が出す。
+- **`time_series_data.h5` の全データセットを構成間で比較** (h5py、dipole、
+  CPU 基準、複合型は成分ごとに数値比較)。MPI (n=2 / n=4) は 1e-15 以下で
+  実質ビット一致、CUDA 3 構成 (HDM / UM / CUDA+MPI) は最大 1.1e-6
+  (`freqdomain/H`、単精度 DFT の差)。データセットの構成も `loss/P_loss`
+  (熱解析 = CPU 版のみ、README のとおり) を除いて一致。
+- この比較で **CUDA 単体版が収束履歴の最後の 1 点を落とす**バグを検出し、
+  3 リポジトリとも修正した (`cuda/solve.cu` の `Niter` 加算が収束判定の
+  `break` より後にあった。CPU / MPI / CUDA+MPI は格納直後に加算しており、
+  この実装だけがずれていた)。実測で `convergence/iter` が CPU の 0..550
+  (12 点) に対し CUDA は 0..500 (11 点)、`metadata/Niter` も 12 対 11。
+  修正後は 5 構成すべて一致。**ログの回帰基準値にも解析解の比較にも現れず、
+  HDF5 の中身を構成間で突き合わせて初めて分かる種類の不具合**だった。
+- 外部音響ソルバー [OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics)
+  も確認したが、こちらは OpenMP のみで CUDA / MPI 変種を持たない
+  (`AcousticRunner` の契約どおり単一実行ファイル)。
+- **環境変数ゲートの統合テストをこの PC で初めて全部走らせた**。
+  `USE_HDF5=ON` でビルドし `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` を実カーネルに
+  向けると **11,250 → 11,447 checks (0 failures)**。増えた 197 checks は
+  H5 リーダ (`io/H5Reader` — カーネルの `time_series_data.h5` を読む経路)、
+  `ofd` 統合 (実行 → `ofd.log` の給電点表を GUI のパーサで読む → GUI の
+  Courant 推定がカーネルの `Dt` と一致)、bellhop 統合 (`BellhopIO` が書いた
+  `.env` を実カーネルで走らせ `.shd` 生成まで) の分。`OFDX_PEEC_BIN` /
+  `OFDX_OFE_BIN` は対応リポジトリ未ビルドのため skip のまま。
+  手順は `docs/windows-cuda-mpi-build.md` §4 に記載。
+- **ビルドした実行ファイルが単体で起動できない件も解消**。ビルドに使った
+  シェル (Qt を PATH に持つ) からしか起動できず、Explorer からのダブル
+  クリックでは `0xC0000135` (DLL not found) で無言のまま落ちていた。
+  `windeployqt` で Qt の DLL とプラグインを実行ファイルの隣へ配置し、
+  ヘッドレス用に `qoffscreen.dll` / `qminimal.dll` も手でコピーする
+  (windeployqt は `qwindows.dll` しか置かず、無いと offscreen 起動時に
+  モーダルダイアログが出たまま止まる)。MPI 版カーネルは `msmpi.dll` を隣へ。
+  `ofd_cuda` / `bellhopcuda` は CUDA ランタイムまで静的なので措置不要。
+  手順と対応表は `docs/windows-cuda-mpi-build.md` §2.5。
+
 ## 5. 次の作業 (優先順)
 
 1. ~~フェーズ2 残作業 §2 の 5 (schemaVersion "1.1" の書き出し — 負債 #2)~~
-   → **完了 (2026-08-16)**。6 (校正オフセット — 負債 #1) も完了。
+   → **完了 (2026-08-23)**。§2 の 1〜6 がすべて完了したので**フェーズ2 は
+   完了**。`auralization` / `solver` ネストのラウンドトリップは負債 #3 の
+   対応時に全 25 フィールドを網羅済み。
 2. ~~負債 #7 / #8 の追加テスト (96 kHz 帯域フィルタ、クリッピング陽性)~~
    → **完了** (`tests/acoustics/test_bandfilter.cpp` /
    `tests/acoustics/test_clipping.cpp`)。
-3. フェーズ2 完了時に baseline 文書のチェック総数を更新し、
-   本書のフェーズ表を更新。
+3. ~~フェーズ2 完了時に baseline 文書のチェック総数を更新し、
+   本書のフェーズ表を更新~~ → **完了 (2026-08-23)**。
+   `docs/opera-acoustics-baseline.md` の実測出力と運用ルール 2 を
+   現在値 (11,455 checks) に更新し、本書のフェーズ表の #2 を完了にした。
 4. 残課題の優先度整理: リアルタイム再生 (負債 #11)、実音響ソルバー
    (負債 #13)、声区分析 (負債 #14 の残り — フォルマント推定は解消済み)、
    旧フェーズ4 計画分 (負債 #10 の残り — レポート出力は解消済み、
