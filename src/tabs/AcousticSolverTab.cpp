@@ -218,6 +218,28 @@ const bool s_i18n = [] {
         "geometric) emit the superposition of all feeds fired simultaneously "
         "at unit strength (ADR-0010). Per-feed gain and delay are set in the "
         "table below; directivity is not supported.");
+    I18n::reg("acs_angledep",
+        "角度依存吸音: 吸音率をランダム入射として扱う (angle_dependent_absorption)",
+        "Angle-dependent absorption: treat alpha as random-incidence "
+        "(angle_dependent_absorption)");
+    I18n::reg("acs_angledep_note",
+        "オフ (既定) は吸音表の α を垂直入射として R = √(1−α) を使う (従来動作)。"
+        "オンで .ofdx に acoustic.angle_dependent_absorption を書き、FDTD / "
+        "幾何音響の両ソルバーが α を残響室法のランダム入射吸音率として読み、"
+        "Paris の式の逆解 ζ で局所反応境界を作る (斜入射の反射 R(θ) = "
+        "(ζcosθ−1)/(ζcosθ+1)。垂直入射のまま使うと斜入射で吸音が二重に効く)。"
+        "α > 0.951 は局所反応の上限としてクランプされ solver.log に warning が"
+        "出る (ADR-0011)。",
+        "Off (default): the solvers read alpha as normal incidence, "
+        "R = sqrt(1-alpha) (previous behaviour). On: writes "
+        "acoustic.angle_dependent_absorption to the .ofdx and both solvers "
+        "(FDTD and geometric) read alpha as the random-incidence "
+        "(reverberation-room) value, building a locally reacting boundary "
+        "from the Paris-formula inverse zeta (oblique reflection R(theta) = "
+        "(zeta cos - 1)/(zeta cos + 1); using alpha as normal incidence "
+        "double-counts absorption at oblique angles). alpha above 0.951 is "
+        "clamped to the locally reacting limit with a warning in solver.log "
+        "(ADR-0011).");
     I18n::reg("acs_feeds", "feed ごとのゲイン・遅延",
               "Per-feed gain and delay");
     I18n::reg("acs_feeds_note",
@@ -446,6 +468,12 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     m_multiSource->setToolTip(I18n::tr("acs_multisrc_note"));
     ev->addWidget(m_multiSource);
 
+    // 角度依存吸音 (ADR-0011) — .ofdx acoustic.angle_dependent_absorption。
+    // 複数音源と同じく両ソルバーが読むキーなので、同じ外部ソルバー枠に置く
+    m_angleDep = new QCheckBox(I18n::tr("acs_angledep"), m_extGroup);
+    m_angleDep->setToolTip(I18n::tr("acs_angledep_note"));
+    ev->addWidget(m_angleDep);
+
     // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — .ofdx acoustic.feeds。
     // 行は .ofd の feed 行と 1 対 1 で、行数は refresh が合わせる。
     // 複数音源がオフでも 1 行目は feed #1 に効くので、トグルとは独立に出す。
@@ -637,6 +665,8 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
             [this](int) { apply(); });
     connect(m_multiSource, &QCheckBox::toggled, this,
             [this](bool) { apply(); });
+    connect(m_angleDep, &QCheckBox::toggled, this,
+            [this](bool) { apply(); });
     connect(btnBrowse, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
             this, I18n::tr("acs_binary"));
@@ -730,6 +760,8 @@ void AcousticSolverTab::apply()
     s.solverProcesses = m_processes->value();
     // 複数音源は .ofdx acoustic.multi_source (AcousticOpts) — ADR-0010
     m_p->acoustic().multiSource = m_multiSource->isChecked();
+    // 角度依存吸音は .ofdx acoustic.angle_dependent_absorption — ADR-0011
+    m_p->acoustic().angleDependentAbsorption = m_angleDep->isChecked();
     // feed ごとのゲイン・遅延 (ADR-0010 Decision 7)。表に出ていない行
     // (feed 数を超える手書きの entry) は触らずに残す。
     {
@@ -818,6 +850,7 @@ void AcousticSolverTab::refresh()
     m_threads->setValue(s.solverThreads);
     m_processes->setValue(s.solverProcesses);
     m_multiSource->setChecked(m_p->acoustic().multiSource);
+    m_angleDep->setChecked(m_p->acoustic().angleDependentAbsorption);
     refreshFeedTable();
     // 外部プロセス設定は ExternalFDTD / ExternalGeometric のみ
     const bool ext = s.solverBackend == 3 || s.solverBackend == 4;

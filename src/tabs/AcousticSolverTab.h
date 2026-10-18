@@ -86,6 +86,7 @@ private:
     QLineEdit    *m_execPath = nullptr;
     QSpinBox     *m_threads = nullptr, *m_processes = nullptr;
     QCheckBox    *m_multiSource = nullptr; // 複数音源 (ADR-0010)
+    QCheckBox    *m_angleDep = nullptr;    // 角度依存吸音 (ADR-0011)
     // feed ごとのゲイン・遅延 (.ofdx acoustic.feeds — ADR-0010 Decision 7)。
     // 行は .ofd の feed 行と 1 対 1 (行数は refresh で feeds().size() に
     // 合わせる)。ゲイン/遅延のセルは QDoubleSpinBox で契約の値域を保証する。

@@ -801,6 +801,11 @@ QByteArray OfdxIO::serialize(const Project &p)
         // 2 本が .ofd の全 feed を強度 1・t = 0 で同時発火した重ね合わせを
         // rir.wav に出す (両ソルバーが同じキーを読む — 対称が契約の一部)。
         if (a.multiSource) ac["multi_source"] = true;
+        // 角度依存吸音 (ADR-0011) — 既定 (false) ならキー自体を書かない
+        // (旧ファイルとバイト一致。絶対規則 2)。acoustic 直下に置くのは
+        // FDTD / 幾何音響の両ソルバーが読むため (片方だけ切り替わると
+        // ハイブリッドのクロスオーバーで壁が食い違う)。
+        if (a.angleDependentAbsorption) ac["angle_dependent_absorption"] = true;
         {   // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — 全行が既定
             // (gain = 1, delay = 0) ならキー自体を書かない (旧ファイルと
             // バイト一致。絶対規則 2)。キー名が "sources" でないのは、
@@ -1525,6 +1530,9 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         a.rtFormula = ac.value("rt_formula").toInt(a.rtFormula);
         // 複数音源 (ADR-0010) — 追加キー。欠落時は false (旧ファイル互換)
         a.multiSource = ac.value("multi_source").toBool(a.multiSource);
+        // 角度依存吸音 (ADR-0011) — 追加キー。欠落時は false (旧ファイル互換)
+        a.angleDependentAbsorption = ac.value("angle_dependent_absorption")
+                                         .toBool(a.angleDependentAbsorption);
         if (ac.contains("absorption")) {
             a.absorption.clear();
             for (const QJsonValue &v : ac["absorption"].toArray()) {

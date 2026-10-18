@@ -483,6 +483,15 @@ struct AcousticOpts {
     // 自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
     bool    multiSource = false;
 
+    // ── 角度依存吸音 (.ofdx "acoustic.angle_dependent_absorption" — 追加キー。
+    //    ADR-0011) ──
+    // true で外部音響ソルバー 2 本が吸音表の alpha を**ランダム入射**の値と
+    // して読み、Paris の式の逆解 zeta で局所反応境界を作る (斜入射の反射が
+    // R(θ) = (ζcosθ−1)/(ζcosθ+1) になる)。false (既定) は従来どおり alpha を
+    // 垂直入射として R = √(1−α)。両ソルバーが同じキーを読む (対称)。
+    // 既定のままならキー自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
+    bool    angleDependentAbsorption = false;
+
     // ── feed ごとのゲイン・遅延 (.ofdx "acoustic.feeds" — 追加キー。
     //    ADR-0010 Decision 7) ──
     // 並びは .ofd の feed 行の順 (entry #1 = feed #1)。音源 i は

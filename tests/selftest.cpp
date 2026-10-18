@@ -3965,6 +3965,57 @@ static void testAudioEditEngine()
                   "msrc-ofdx: missing key falls back to false (feed #1 only)");
         }
 
+        // ── 角度依存吸音 (.ofdx acoustic.angle_dependent_absorption —
+        //    ADR-0011) ──
+        // 同じく追加キー: 既定 (false) ならキーを書かず、戻せばバイト一致。
+        // 両ソルバーが acoustic 直下で読むので、acoustic.ga の中ではなく
+        // acoustic 直下に出ること (ソルバー側の FDTD は acoustic.ga を丸ごと
+        // 読み飛ばす) も確かめる。
+        {
+            ofd::Project ap;
+            QString e6;
+            const QString p6 = dir.filePath("angdep.ofd");
+            const QString sc6 = dir.filePath("angdep.ofdx");
+            auto bytes6 = [&] {
+                QFile f(sc6);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(ap.save(p6, &e6), "angdep-ofdx: default saved");
+            const QByteArray base6 = bytes6();
+            check(!base6.contains("angle_dependent_absorption"),
+                  "angdep-ofdx: defaults write no angle_dependent_absorption key");
+
+            ap.acoustic().angleDependentAbsorption = true;
+            check(ap.save(p6, &e6), "angdep-ofdx: enabled saved");
+            check(bytes6().contains("\"angle_dependent_absorption\": true"),
+                  "angdep-ofdx: enabling writes angle_dependent_absorption: true");
+            {
+                QFile f(sc6);
+                const QJsonObject ac = f.open(QIODevice::ReadOnly)
+                    ? QJsonDocument::fromJson(f.readAll()).object()
+                          .value("acoustic").toObject()
+                    : QJsonObject();
+                check(ac.value("angle_dependent_absorption").toBool(false),
+                      "angdep-ofdx: key sits directly under acoustic (both solvers read it)");
+            }
+
+            ofd::Project rd6;
+            check(rd6.load(p6, &e6), "angdep-ofdx: reloaded");
+            check(rd6.acoustic().angleDependentAbsorption,
+                  "angdep-ofdx: round-trips the angle-dependent flag");
+            check(!rd6.acoustic().multiSource,
+                  "angdep-ofdx: independent of the multi-source flag");
+
+            rd6.acoustic().angleDependentAbsorption = false;
+            check(rd6.save(p6, &e6), "angdep-ofdx: reverted saved");
+            check(bytes6() == base6,
+                  "angdep-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o6;
+            check(!o6.acoustic().angleDependentAbsorption,
+                  "angdep-ofdx: missing key falls back to false (normal incidence)");
+        }
+
         // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —
         //    ADR-0010 Decision 7) ──
         // 追加キー: 全行が既定 (gain 1 / delay 0) ならキーを書かず、
