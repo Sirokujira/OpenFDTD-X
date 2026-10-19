@@ -10,8 +10,14 @@ paths:
 - **Qt API は 6.4.2 で使えるものに限る** (CI Linux の apt Qt が下限。
   Windows CI は 6.8 だが、6.5+ の API を使うと Linux ジョブで落ちる)。
 - 重い処理 (秒単位の分析・変換) を GUI スレッドで同期実行しない。
-  既知の負債: VocalAnalyzer の YIN が同期実行で ~2 秒/10 秒クリップ。
-  新規機能で同じパターンを増やさない (QtConcurrent 等を検討)。
+  手本は `VocalAnalysisTab::runAnalysis` (2026-10-19 に非同期化 — 歌声分析は
+  ~33 ms / 音声 1 秒で 3 分のアリアなら約 6 秒かかる): 入力は**値で捕捉**して
+  `QThread::create` で回し、実行中はボタンを無効化 + 「分析中」表示、
+  例外はスレッド内で受ける (投げると std::terminate)。完了時には
+  **処理が読む入力だけ**を比べ (`QtAcousticAdapter::vocalInputsEqual` の形)、
+  実行中に変わっていたら結果を表示せず破棄する — `Project::changed` は
+  他タブの編集でも飛ぶので「何か変わったら破棄」にはしない。
+  `AudioEditorTab::runHeavy` も同じ流儀 (失敗し得る処理は error 付きの多重定義)。
 - タブ間で共有できるヘルパー (品質バッジ、CSV/JSON 保存、波形
   エンベロープ等) は既存の `RirAnalysisTab` からコピーせず、
   共有ヘッダへ抽出してから使う。

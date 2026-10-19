@@ -87,6 +87,15 @@ public:
     static acoustics::AcousticResult<acoustics::VocalAnalysisResult>
     analyzeVocalFile(const QString &path, const OperaAcousticSettings &settings);
 
+    // a と b で analyzeVocalFile(voicePath, ·) の結果が同じになるか —
+    // **analyzeVocalFile が読む設定だけ**を比べる (voicePath / channelMode /
+    // voiceType / F0 範囲 / 校正状態 / 実際に適用される校正オフセット)。
+    // 非同期分析の完了時に「実行中に入力が変わっていないか」を判定する。
+    // analyzeVocalFile / toVocalConfig が読む設定を増やしたらここにも足す
+    // (selftest がフィールドごとに検査する)。
+    static bool vocalInputsEqual(const OperaAcousticSettings &a,
+                                 const OperaAcousticSettings &b);
+
     // ── 可聴化 (フェーズ4) ──────────────────────────────────────────────────
     // fs 不一致で RIR をドライ側 fs へリサンプリングしたことの通知 (UI 表示用。
     // 黙って変換しない — 呼び出し側は resampled のとき必ずユーザーに明示する)

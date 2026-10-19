@@ -5,7 +5,10 @@
 // 使用し、診断的な結論 (声区判定・巧拙・適性など) は表示しない (ADR-0006)。
 //   ① 入力     — 歌唱 WAV (voicePath 再利用) / 声種 / F0 範囲上書き /
 //                 校正状態の表示 (編集は実測RIR分析タブ)
-//   ② 実行     — QtAcousticAdapter::analyzeVocalFile で同期分析
+//   ② 実行     — QtAcousticAdapter::analyzeVocalFile を QThread で非同期実行
+//                 (~33 ms / 音声 1 秒 — 3 分のアリアで約 6 秒かかるため、
+//                 GUI スレッドで回すと画面が固まる。gui.md)。実行中に分析の
+//                 入力が変わったら結果は表示せず破棄する
 //   ③ 結果     — 指標表 (F0 統計 / ビブラート / HNR / スペクトル重心 /
 //                 歌手フォルマント比 / フォルマント F1-F3 中央値 /
 //                 帯域エネルギー / Leq・ピーク)。
@@ -67,6 +70,7 @@ private:
     // ② 実行
     QPushButton *m_runBtn = nullptr;
     QLabel      *m_status = nullptr;
+    bool         m_busy = false;     // 非同期分析の実行中 (再入防止)
 
     // ③ 結果
     QTableWidget *m_metricTable = nullptr;

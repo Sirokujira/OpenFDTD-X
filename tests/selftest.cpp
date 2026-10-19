@@ -4219,6 +4219,94 @@ static void testAudioEditEngine()
 // QtAcousticAdapter は calibrationState==Absolute のときだけオフセットを
 // 分析コアへ渡す。Relative / Uncalibrated では 0 (未校正なのに SPL が
 // ずれるのを防ぐ — CLAUDE.md 絶対規則 6)。RIR / 歌声の両経路で同じ規則。
+// 歌声分析の非同期化 (VocalAnalysisTab) — 完了時に「実行中に入力が
+// 変わったか」を判定する QtAcousticAdapter::vocalInputsEqual の検査。
+// 分析が読む設定の変化は必ず検出し (偽の「同じ」は古い結果を今の設定の
+// 結果として見せる)、読まない設定の変化では結果を捨てない (他タブの編集で
+// 毎回破棄されると非同期化が台無し)。後者は実ファイルの分析結果が実際に
+// 一致することまで確かめる。
+static void testVocalInputsEqual()
+{
+    g_file = "vocal-async";
+    using acoustics::AudioBuffer;
+    using audioedit::SignalKind;
+
+    OperaAcousticSettings base;
+    base.voicePath = "/tmp/aria.wav";
+    base.calibrationState = 0;           // Absolute (オフセットが効く)
+    base.calibrationOffsetDb = 94.0;
+    check(QtAcousticAdapter::vocalInputsEqual(base, base),
+          "vocal-eq: reflexive");
+
+    // 分析が読む設定 — どれが変わっても「違う」
+    {
+        OperaAcousticSettings t = base; t.voicePath = "/tmp/other.wav";
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: voicePath");
+        t = base; t.channelMode = 0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: channelMode");
+        t = base; t.voiceType = 3;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: voiceType");
+        t = base; t.vocalF0MinHz = 120.0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: f0 min");
+        t = base; t.vocalF0MaxHz = 900.0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: f0 max");
+        t = base; t.calibrationState = 2;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: calibration state");
+        t = base; t.calibrationOffsetDb = 90.0;   // Absolute なので効く
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: offset matters when Absolute");
+    }
+    // 分析が読まない設定 — 変わっても「同じ」(結果を捨てない)
+    {
+        OperaAcousticSettings t = base;
+        t.rirPath = "/tmp/hall.wav";
+        t.bandMode = 3;
+        t.directSoundMethod = 0;
+        t.noiseCorrection = !base.noiseCorrection;
+        t.stConditionDeclared = true;
+        t.auralizationDryFile = "/tmp/dry.wav";
+        t.solverThreads = 16;
+        check(QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: unrelated (RIR / auralization / solver) edits ignored");
+        // Relative / Uncalibrated ではオフセットは分析に渡らない (0 に落ちる)
+        OperaAcousticSettings r1 = base, r2 = base;
+        r1.calibrationState = r2.calibrationState = 1;
+        r2.calibrationOffsetDb = 10.0;
+        check(QtAcousticAdapter::vocalInputsEqual(r1, r2),
+              "vocal-eq: unused offset ignored when not Absolute");
+    }
+
+    // 「同じ」と判定した 2 つの設定で、実ファイルの分析結果が実際に一致する
+    QTemporaryDir dir;
+    check(dir.isValid(), "vocal-eq: temp dir");
+    if (!dir.isValid()) return;
+    const QString wav = dir.filePath("voice.wav");
+    const AudioBuffer v =
+        audioedit::generateSignal(SignalKind::Sine, 220.0, 0, 1.0, 0.3, 48000.0);
+    check(acoustics::writeWavFile(wav.toStdString(), v).success(),
+          "vocal-eq: voice written");
+    OperaAcousticSettings a = base;
+    a.voicePath = wav;
+    OperaAcousticSettings b = a;
+    b.rirPath = "/tmp/hall.wav";
+    b.bandMode = 2;
+    check(QtAcousticAdapter::vocalInputsEqual(a, b), "vocal-eq: pair is equal");
+    const auto ra = QtAcousticAdapter::analyzeVocalFile(a.voicePath, a);
+    const auto rb = QtAcousticAdapter::analyzeVocalFile(b.voicePath, b);
+    check(ra.success() && rb.success(), "vocal-eq: both analyses succeed");
+    if (ra.success() && rb.success()) {
+        const acoustics::VocalAnalysisResult &x = ra.value(), &y = rb.value();
+        check(x.voicedFrameCount == y.voicedFrameCount
+                  && x.f0MedianHz.valid == y.f0MedianHz.valid
+                  && x.f0MedianHz.value == y.f0MedianHz.value
+                  && x.hnrDb.value == y.hnrDb.value,
+              "vocal-eq: equal inputs give bit-identical results");
+        check(x.f0MedianHz.valid && std::fabs(x.f0MedianHz.value - 220.0) < 2.0,
+              "vocal-eq: analysis really ran (F0 median ~220 Hz)");
+    }
+}
+
 static void testCalibrationOffsetGate()
 {
     g_file = "calib-offset";
@@ -27179,6 +27267,7 @@ int main(int argc, char *argv[])
     testAudioEditEngine();
     testMovieExport();
     testCalibrationOffsetGate();
+    testVocalInputsEqual();
     testResampler();
     testRirSampleRateNotes();
     testAcousticPreflight();

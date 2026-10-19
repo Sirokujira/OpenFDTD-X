@@ -985,6 +985,15 @@ void I18n::loadTables() {
     add("vocal_status_nofile", "歌唱 WAV ファイルが選択されていません。",
         "No singing WAV file selected.");
     add("vocal_status_error", "分析失敗: %1 — %2", "Analysis failed: %1 — %2");
+    add("vocal_status_running", "分析中… (%1)", "Analyzing… (%1)");
+    add("vocal_status_internal", "分析中に内部エラーが発生しました: %1",
+        "Internal error during the analysis: %1");
+    add("vocal_status_stale",
+        "分析中に入力 (ファイル・声種・F0 範囲・チャンネル・校正) が変わったため、"
+        "結果を破棄しました。もう一度実行してください。",
+        "The inputs (file, voice type, F0 range, channel or calibration) "
+        "changed during the analysis, so the result was discarded. "
+        "Run it again.");
     add("vocal_status_ok",
         "分析完了 — 総合品質: %1 / 有声率 %2% / F0中央値 %3",
         "Done — overall quality: %1 / voiced %2% / F0 median %3");

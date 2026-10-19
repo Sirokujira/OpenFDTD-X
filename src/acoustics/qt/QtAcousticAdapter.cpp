@@ -287,6 +287,21 @@ QtAcousticAdapter::analyzeVocalFile(const QString &path,
                             wav.value().sampleRateHz);
 }
 
+bool QtAcousticAdapter::vocalInputsEqual(const OperaAcousticSettings &a,
+                                         const OperaAcousticSettings &b)
+{
+    // 校正は「分析に渡る値」で比べる: Absolute 以外ではオフセットは 0 に
+    // 落ちるので、未使用のオフセットが変わっても結果は変わらない
+    return a.voicePath == b.voicePath
+        && a.channelMode == b.channelMode
+        && a.voiceType == b.voiceType
+        && a.vocalF0MinHz == b.vocalF0MinHz
+        && a.vocalF0MaxHz == b.vocalF0MaxHz
+        && toCalibrationState(a.calibrationState)
+               == toCalibrationState(b.calibrationState)
+        && effectiveCalibrationOffsetDb(a) == effectiveCalibrationOffsetDb(b);
+}
+
 // ── ソルバー metadata.json (ADR-0007 契約) ──────────────────────────────────
 QtAcousticAdapter::SolverMetadata
 QtAcousticAdapter::readSolverMetadata(const QString &metadataPath)

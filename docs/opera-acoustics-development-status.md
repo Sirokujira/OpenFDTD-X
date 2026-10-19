@@ -92,6 +92,7 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
 | 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。**2026-08-06 追補**: 1 段の上限 (L, M ≤ 4096) を超える比 (FDTD の格子刻み由来の端数 fs — 例 1201 Hz → 48000 Hz = 48000/1201) を多段カスケードで実現し、分割できない比 (fs が大きな素数) は 1 段で押し切る (max(L,M) ≤ 65536)。それも超える比だけをエラーにし、メッセージに実際の fs を入れる。**2026-10-18 追補**: 他の fs 不一致箇所への展開も確認した — 音響編集の連結 (`AudioEditEngine::crossfadeConcat`) とハイブリッド RIR (`HybridRir`) は既に同じ Resampler で変換していた。ただし連結は**変換できない比 (例: 96001 Hz → 48000 Hz、65537 Hz → 48000 Hz — 整数 fs の実 WAV でも起こる) で b を a の fs のまま黙って並べていた** (音程・速度がずれた波形を成功として返す)。失敗時は結合せず a を変更せずに返し、理由を error で返すよう修正し、編集タブの「連結」はバッファを差し替えずに理由をステータスへ出す (「SRC 変換」ボタンと同じ扱い)。selftest +6 checks (変換可能な比で error が空・前回理由を持ち越さない / 変換不能な比で error が fs を名指しし a をビット不変で返す / error を受け取らない呼び出しでも結合しない) |
 | 13 | ~~実音響ソルバーが存在しない (CI はモックのみ)~~ **ExternalFDTD / ExternalGeometric とも解消済み** (FDTD 2026-08-05 / 幾何音響 2026-08-06) | — | **ExternalFDTD の実ソルバーを [Sirokujira/OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics) (`ofdx_acoustic_fdtd`) として実装** (ADR-0007 契約準拠、C11、3D スタガード格子線形音響 FDTD、吸音率→インピーダンス境界、受音点ごとの `rir.wav`/`rir_<名前>.wav` 出力 = 一括可聴化の自動割当と噛み合う)。検証は解析解 (閉箱軸モード ±3%・管端反射 R=√(1−α) ±3%・直接音到達・剛壁エネルギー保存・Sabine 式) + 決定性 + 契約。同リポジトリ CI (3 OS + sanitize) green。GUI からはカーネルパス設定か `$OFDX_ACOUSTIC_SOLVER` でバイナリを指定する。本リポジトリの CI モック統合テストは契約の番人としてそのまま維持 (ADR-0007 §5)。GUI 入口は従来どおり `AcousticSolverTab` + `AcousticRunner` |
 | 14 | ~~フォルマント周波数推定 (F1/F2) が無い~~ **フォルマント推定は解消済み** (声区 (レジスター) 分析は将来課題) | (解消前: 歌手フォルマントは帯域エネルギー比のみで声楽的フィードバックの分解能が限定的だった) | **完了 (フォルマント)**: `src/acoustics/core/FormantEstimator` (LPC — 反エイリアス FIR + 1/5 間引きで内部 fs 9.6 kHz、p = 2 + round(fs/1000) = 12、プリエンファシス 0.97 + ハミング窓、Levinson-Durbin、Durand-Kerner 根 (決定的初期値・乱数不使用))。YIN の有声判定フレームのみ推定し、F ≥ 90 Hz・帯域幅 ≤ 400 Hz の極を昇順に F1/F2/F3、代表値は有効フレームの時間中央値 (MetricValue)。`VocalAnalysisTab` に F1/F2/F3 中央値 + 軌跡 MiniPlot、CSV/JSON 出力に追加。検証は `tests/acoustics/test_formant.cpp` (合成母音 ±10% — `docs/opera-acoustics-validation.md` §12)。診断的結論の禁止 (ADR-0006) は維持 — 共鳴周波数という物理量のみを報告する。**声区分析は引き続き将来課題** |
+| 15 | ~~歌声分析が GUI スレッドで同期実行される (`.claude/rules/gui.md` の既知負債 — 本表には未記載だった)~~ **解消済み (2026-10-19)** | (解消前: 分析中は画面全体が固まった。Release ビルドの実測で ~33 ms / 音声 1 秒 = 60 秒の歌唱で約 2 秒、3 分のアリアで約 6 秒。gui.md の「~2 秒 / 10 秒」は古い値だった) | **完了**: `VocalAnalysisTab::runAnalysis` を `QThread` で非同期化。入力 (`OperaAcousticSettings`) は値で捕捉してワーカーへ渡し、実行中はボタン無効化 + 「分析中… (ファイル名)」を表示、再入は無視、ワーカー内の例外は受けて内部エラーとして表示する。完了時は **分析が読む設定だけ** (voicePath / channelMode / voiceType / F0 範囲 / 校正状態 / 実際に適用される校正オフセット) を `QtAcousticAdapter::vocalInputsEqual` で比べ、実行中に変わっていたら結果を表示せず破棄して理由を出す — `Project::changed` は他タブの編集でも飛ぶので「何か変わったら破棄」にはしていない。selftest `vocal-async` +16 checks (分析が読む 7 設定の変化を必ず検出 / 読まない設定と非 Absolute 時の未使用オフセットは無視 / 「同じ」と判定した 2 設定で実 WAV の分析結果がビット一致)。実タブを offscreen で駆動する使い捨てハーネスでも確認: 60 秒の WAV で click が 0 ms で戻り (変更前は 2,082 ms 戻らなかった)、実行中に声種を変えると破棄・RIR パスを変えても結果は残る。実測 RIR 分析 (`RirAnalysisTab`) は 2.5 秒 RIR の 1/3 oct で 0.37 s と短いので同期のまま |
 
 ## 4. 品質基準の現在値
 
@@ -134,13 +135,14 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
   `USE_HDF5=OFF` の既定ビルドでは 11,258)。
   **現在値 (2026-10-18 実測、`USE_HDF5=ON` / カーネル無し):
-  `ofdx_selftest` = 24 files loaded, 11,373 checks, 0 failures /
+  `ofdx_selftest` = 24 files loaded, 11,389 checks, 0 failures /
   `ctest` = 23 テスト 0 failures (checks 合計 1,911)**。
   内訳の変化は負債 #5 (C API api_version 2) の `test_c_api` +242 (281 checks)、
   負債 #6 (WAV ストリーミング読み) の `test_wav` +14 (66 checks)、
   `ofdx-schema` への追加 +5 (13 checks — 版の更新で未知キーを失わないこと /
   未知の将来版も読めること)、音響編集の連結が変換できない fs 比で黙って
-  誤速度に結合しないこと (負債 #12 の取りこぼし) +6。
+  誤速度に結合しないこと (負債 #12 の取りこぼし) +6、歌声分析の非同期化
+  (負債 #15) の `vocal-async` +16。
 - 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1,900 checks,
   0 failures** (2026-10-18 実測。残り 2 本は `roomac.fitzroy` 11 checks と
   `kernel.runner_mpi`。従来の「15 テスト / 1292」はテスト追加を反映して
