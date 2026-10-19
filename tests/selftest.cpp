@@ -4016,6 +4016,115 @@ static void testAudioEditEngine()
                   "angdep-ofdx: missing key falls back to false (normal incidence)");
         }
 
+        // ── 障害物の材質 (.ofdx acoustic.obstacles — ADR-0012) ──
+        // 追加キー: 行が無ければキーを書かず、戻せばバイト一致。acoustic 直下に
+        // 出ること、各行の他のキー (幾何音響の scattering 等) が往復で落ちない
+        // こと、手書きの短い alpha が最後の値で外挿されること、geometry の
+        // 挿入・削除で番号が追随することを確かめる。
+        {
+            ofd::Project op;
+            QString e7;
+            const QString p7 = dir.filePath("obs.ofd");
+            const QString sc7 = dir.filePath("obs.ofdx");
+            auto bytes7 = [&] {
+                QFile f(sc7);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto acoustic7 = [&] {
+                return QJsonDocument::fromJson(bytes7()).object()
+                    .value("acoustic").toObject();
+            };
+            check(op.save(p7, &e7), "obs-ofdx: default saved");
+            const QByteArray base7 = bytes7();
+            check(!acoustic7().contains("obstacles"),
+                  "obs-ofdx: defaults write no obstacles key");
+
+            ofd::AcousticOpts::ObstacleMaterial m;
+            m.geometry = 2;
+            const double al[6] = {0.10, 0.12, 0.16, 0.20, 0.24, 0.30};
+            for (int b = 0; b < 6; ++b) m.alpha[b] = al[b];
+            m.extra["scattering"] = 0.4;
+            m.extra["name"] = QStringLiteral("stage riser");
+            op.acoustic().obstacleMaterials = { m };
+            check(op.save(p7, &e7), "obs-ofdx: material saved");
+            {
+                const QJsonArray obs = acoustic7().value("obstacles").toArray();
+                const QJsonObject o = obs.isEmpty() ? QJsonObject()
+                                                    : obs.at(0).toObject();
+                check(obs.size() == 1 && o.value("geometry").toInt() == 2,
+                      "obs-ofdx: row sits directly under acoustic with its geometry index");
+                check(o.value("alpha").toArray().size() == 6
+                      && o.value("alpha").toArray().at(5).toDouble() == 0.30,
+                      "obs-ofdx: writes the six band alphas");
+                check(o.value("scattering").toDouble() == 0.4
+                      && o.value("name").toString() == QStringLiteral("stage riser"),
+                      "obs-ofdx: keeps the other keys of the row (scattering, name)");
+            }
+
+            ofd::Project rd7;
+            check(rd7.load(p7, &e7), "obs-ofdx: reloaded");
+            {
+                const auto &om = rd7.acoustic().obstacleMaterials;
+                bool same = om.size() == 1 && om[0].geometry == 2;
+                for (int b = 0; same && b < 6; ++b) same = om[0].alpha[b] == al[b];
+                check(same, "obs-ofdx: round-trips geometry index and alphas");
+                check(om.size() == 1 && om[0].extra.value("scattering").toDouble() == 0.4,
+                      "obs-ofdx: round-trips the extra keys");
+            }
+            check(rd7.save(p7, &e7) && acoustic7().value("obstacles").toArray()
+                      .at(0).toObject().value("scattering").toDouble() == 0.4,
+                  "obs-ofdx: load -> save keeps the geometric solver's scattering");
+
+            {   // 手書きの短い alpha は最後の値で外挿 (ソルバーと同じ規則)、
+                // 範囲外は 0..1 にクランプ
+                QJsonObject root = QJsonDocument::fromJson(bytes7()).object();
+                QJsonObject ac = root.value("acoustic").toObject();
+                ac["obstacles"] = QJsonArray{ QJsonObject{
+                    {"geometry", 1}, {"alpha", QJsonArray{0.2, 1.5}} } };
+                root["acoustic"] = ac;
+                QFile f(sc7);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                      && f.write(QJsonDocument(root).toJson()) > 0,
+                      "obs-ofdx: hand-written short row prepared");
+                f.close();
+                ofd::Project hw;
+                check(hw.load(p7, &e7), "obs-ofdx: hand-written row loaded");
+                const auto &om = hw.acoustic().obstacleMaterials;
+                check(om.size() == 1 && om[0].alpha[0] == 0.2
+                      && om[0].alpha[1] == 1.0 && om[0].alpha[5] == 1.0,
+                      "obs-ofdx: short alpha extrapolated by its last value and clamped");
+            }
+
+            {   // geometry の挿入・削除で番号が追随する
+                ofd::AcousticOpts a;
+                ofd::AcousticOpts::ObstacleMaterial m1, m3;
+                m1.geometry = 1; m3.geometry = 3;
+                a.obstacleMaterials = { m1, m3 };
+                a.geometryRemoved(1);            // geometry #2 を削除
+                check(a.obstacleMaterials.size() == 2
+                      && a.obstacleMaterials[0].geometry == 1
+                      && a.obstacleMaterials[1].geometry == 2,
+                      "obs-ofdx: deleting a geometry shifts the later indices down");
+                a.geometryRemoved(0);            // geometry #1 (材質あり) を削除
+                check(a.obstacleMaterials.size() == 1
+                      && a.obstacleMaterials[0].geometry == 1,
+                      "obs-ofdx: deleting a geometry drops its own material");
+                a.geometryInserted(0);           // 先頭に挿入
+                check(a.obstacleMaterials.size() == 1
+                      && a.obstacleMaterials[0].geometry == 2,
+                      "obs-ofdx: inserting a geometry shifts the later indices up");
+            }
+
+            rd7.acoustic().obstacleMaterials.clear();
+            check(rd7.save(p7, &e7), "obs-ofdx: reverted saved");
+            check(bytes7() == base7,
+                  "obs-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o7;
+            check(o7.acoustic().obstacleMaterials.isEmpty(),
+                  "obs-ofdx: missing key falls back to no materials (rigid)");
+        }
+
         // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —
         //    ADR-0010 Decision 7) ──
         // 追加キー: 全行が既定 (gain 1 / delay 0) ならキーを書かず、

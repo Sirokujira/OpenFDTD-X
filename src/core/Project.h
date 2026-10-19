@@ -492,6 +492,38 @@ struct AcousticOpts {
     // 既定のままならキー自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
     bool    angleDependentAbsorption = false;
 
+    // ── 障害物の材質 (.ofdx "acoustic.obstacles" — 追加キー。ADR-0012) ──
+    // .ofd の geometry 行 (= geometries() の並び) ごとの吸音率。外部音響
+    // ソルバー 2 本が同じキーを読み、FDTD は障害物と空気の界面を外壁と
+    // 同じインピーダンス境界に、幾何音響は障害物の面の反射に使う。行の
+    // 無い障害物は剛体 (従来動作)。空ならキー自体を書かない (旧ファイルと
+    // バイト一致 — 絶対規則 2)。geometry は 1 起点の番号なので、
+    // GeometryTab が行を挿入・削除したら geometryInserted/Removed で
+    // 追随させる (番号がずれると材質が別の障害物へ静かに移るため)。
+    struct ObstacleMaterial {
+        int    geometry = 0;                    // .ofd の geometry 行の 1 起点の番号
+        double alpha[6] = {0, 0, 0, 0, 0, 0};   // 125 Hz .. 4 kHz
+        // 他のキー (name / scattering / enabled …) はそのまま保持して書き戻す
+        // (幾何音響の scattering を GUI 経由の保存で落とさないため)
+        QJsonObject extra;
+    };
+    QVector<ObstacleMaterial> obstacleMaterials;
+
+    // geometries() の 0 起点 at に行を挿入した / at の行を削除した
+    void geometryInserted(int at) {
+        for (ObstacleMaterial &m : obstacleMaterials)
+            if (m.geometry >= at + 1) ++m.geometry;
+    }
+    void geometryRemoved(int at) {
+        QVector<ObstacleMaterial> kept;
+        for (ObstacleMaterial m : obstacleMaterials) {
+            if (m.geometry == at + 1) continue;      // 消えた障害物の材質
+            if (m.geometry > at + 1) --m.geometry;
+            kept.push_back(m);
+        }
+        obstacleMaterials = kept;
+    }
+
     // ── feed ごとのゲイン・遅延 (.ofdx "acoustic.feeds" — 追加キー。
     //    ADR-0010 Decision 7) ──
     // 並びは .ofd の feed 行の順 (entry #1 = feed #1)。音源 i は

@@ -260,6 +260,29 @@ const bool s_i18n = [] {
     I18n::reg("acs_feeds_col_delay", "遅延 [ms]", "Delay [ms]");
     I18n::reg("acs_feeds_none",
               "(.ofd に feed 行がありません)", "(no feed lines in the .ofd)");
+    I18n::reg("acs_obs", "障害物の材質 (acoustic.obstacles)",
+              "Obstacle materials (acoustic.obstacles)");
+    I18n::reg("acs_obs_note",
+        "geometry ごとの吸音率 α (125 Hz〜4 kHz)。「材質あり」をオンにした行だけ "
+        ".ofdx の acoustic.obstacles に書かれ、FDTD / 幾何音響の両ソルバーが同じ"
+        "材質を使う (FDTD は障害物と空気の界面を外壁と同じインピーダンス境界に、"
+        "幾何音響は障害物の面の反射に使う)。オフの障害物は剛体。行は .ofd の "
+        "geometry 行と 1 対 1 で、ジオメトリタブで行を挿入・削除すると番号が"
+        "追随する。透過は扱わない (ADR-0012)。",
+        "Absorption alpha per geometry (125 Hz to 4 kHz). Only rows with "
+        "\"Material\" on are written to acoustic.obstacles in the .ofdx, and "
+        "both solvers (FDTD and geometric) use the same material: FDTD makes "
+        "the obstacle/air interface the same impedance boundary as the outer "
+        "walls, the geometric solver uses it for reflections off the obstacle "
+        "faces. Obstacles left off are rigid. Rows map 1:1 to the geometry "
+        "lines of the .ofd and follow inserts/deletes in the Geometry tab. "
+        "Transmission is not modelled (ADR-0012).");
+    I18n::reg("acs_obs_col_no", "#", "#");
+    I18n::reg("acs_obs_col_shape", "形状", "Shape");
+    I18n::reg("acs_obs_col_on", "材質あり", "Material");
+    I18n::reg("acs_obs_none",
+              "(.ofd に geometry 行がありません)",
+              "(no geometry lines in the .ofd)");
     I18n::reg("acs_run", "▶ 実行", "▶ Run");
     I18n::reg("acs_stop", "■ 停止", "■ Stop");
     I18n::reg("acs_progress_note", "進捗は stdout の \"progress a/b\" 行を解析",
@@ -491,6 +514,27 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
         m_feedTable->setToolTip(I18n::tr("acs_feeds_note"));
         m_feedTable->setMinimumHeight(3 * 26 + 40);
         ev->addWidget(m_feedTable);
+    }
+
+    // 障害物の材質 (ADR-0012) — .ofdx acoustic.obstacles。行は .ofd の
+    // geometry 行と 1 対 1 で、行数は refresh が合わせる。
+    {
+        auto *ol = new QLabel(I18n::tr("acs_obs"), m_extGroup);
+        ol->setToolTip(I18n::tr("acs_obs_note"));
+        ev->addWidget(ol);
+        m_obsTable = new QTableWidget(0, 9, m_extGroup);
+        m_obsTable->setHorizontalHeaderLabels(
+            { I18n::tr("acs_obs_col_no"), I18n::tr("acs_obs_col_shape"),
+              I18n::tr("acs_obs_col_on"), QStringLiteral("125"),
+              QStringLiteral("250"), QStringLiteral("500"),
+              QStringLiteral("1k"), QStringLiteral("2k"),
+              QStringLiteral("4k") });
+        m_obsTable->horizontalHeader()->setSectionResizeMode(
+            QHeaderView::Stretch);
+        m_obsTable->verticalHeader()->setVisible(false);
+        m_obsTable->setToolTip(I18n::tr("acs_obs_note"));
+        m_obsTable->setMinimumHeight(3 * 26 + 40);
+        ev->addWidget(m_obsTable);
     }
 
     // 解決結果のライブ表示 (実環境の探索結果 — サンプル値ではない)
@@ -779,7 +823,98 @@ void AcousticSolverTab::apply()
         }
         m_p->acoustic().feedDrives = fd;
     }
+    // 障害物の材質 (ADR-0012)。表の各行 (= geometry) について、オンなら
+    // 最初の行の alpha を更新 (無ければ追加)、オフならその geometry の行を
+    // 消す。表に出ていない番号の行 (geometry 数を超える手書きの行) と、
+    // 各行の他のキー (name / scattering 等) は触らずに残す。
+    {
+        QVector<AcousticOpts::ObstacleMaterial> om =
+            m_p->acoustic().obstacleMaterials;
+        const int rows = m_obsTable->rowCount();
+        for (int r = 0; r < rows; ++r) {
+            auto *on = qobject_cast<QCheckBox *>(m_obsTable->cellWidget(r, 2));
+            if (!on) continue;
+            const int geo = r + 1;
+            int first = -1;
+            for (int i = 0; i < om.size(); ++i)
+                if (om[i].geometry == geo) { first = i; break; }
+            if (!on->isChecked()) {
+                for (int i = om.size() - 1; i >= 0; --i)
+                    if (om[i].geometry == geo) om.removeAt(i);
+                continue;
+            }
+            if (first < 0) {
+                AcousticOpts::ObstacleMaterial m;
+                m.geometry = geo;
+                om.push_back(m);
+                first = om.size() - 1;
+            }
+            for (int b = 0; b < 6; ++b)
+                if (auto *sp = qobject_cast<QDoubleSpinBox *>(
+                        m_obsTable->cellWidget(r, 3 + b)))
+                    om[first].alpha[b] = sp->value();
+        }
+        m_p->acoustic().obstacleMaterials = om;
+    }
     m_p->touch();
+}
+
+// 障害物の材質表を geometries() に合わせて作り直す (model → widgets)。
+// モデルは書き換えない — 格納は apply() が行う (キー省略時のバイト一致を
+// 壊さないため)。
+void AcousticSolverTab::refreshObsTable()
+{
+    const QVector<Geometry> &gs = m_p->geometries();
+    const QVector<AcousticOpts::ObstacleMaterial> &om =
+        m_p->acoustic().obstacleMaterials;
+    const int rows = gs.size();
+
+    if (m_obsTable->rowCount() != rows) m_obsTable->setRowCount(rows);
+    for (int r = 0; r < rows; ++r) {
+        const AcousticOpts::ObstacleMaterial *mat = nullptr;
+        for (const AcousticOpts::ObstacleMaterial &m : om)
+            if (m.geometry == r + 1) { mat = &m; break; }   // 最初の行が有効 (ソルバーと同じ)
+
+        auto *no = new QTableWidgetItem(QString::number(r + 1));
+        no->setFlags(no->flags() & ~Qt::ItemIsEditable);
+        no->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_obsTable->setItem(r, 0, no);
+
+        auto *shape = new QTableWidgetItem(
+            gs[r].name.isEmpty()
+                ? QStringLiteral("shape %1").arg(gs[r].shape)
+                : QStringLiteral("%1 (shape %2)").arg(gs[r].name).arg(gs[r].shape));
+        shape->setFlags(shape->flags() & ~Qt::ItemIsEditable);   // .ofd 側が正
+        m_obsTable->setItem(r, 1, shape);
+
+        auto *on = qobject_cast<QCheckBox *>(m_obsTable->cellWidget(r, 2));
+        if (!on) {
+            on = new QCheckBox(m_obsTable);
+            m_obsTable->setCellWidget(r, 2, on);
+            connect(on, &QCheckBox::toggled, this, [this](bool) { apply(); });
+        }
+        const bool enabled = mat && mat->extra.value("enabled").toBool(true);
+        on->setChecked(enabled);
+        for (int b = 0; b < 6; ++b) {
+            auto *sp = qobject_cast<QDoubleSpinBox *>(
+                m_obsTable->cellWidget(r, 3 + b));
+            if (!sp) {
+                sp = new QDoubleSpinBox(m_obsTable);
+                sp->setRange(0.0, 1.0);          // 吸音率の定義域 (ソルバーもクランプ)
+                sp->setDecimals(2);
+                sp->setSingleStep(0.05);
+                m_obsTable->setCellWidget(r, 3 + b, sp);
+                connect(sp, &QDoubleSpinBox::valueChanged, this,
+                        [this](double) { apply(); });
+            }
+            sp->setValue(mat ? mat->alpha[b] : 0.0);
+            sp->setEnabled(enabled);             // 剛体の行は α を編集させない
+        }
+    }
+    // geometry が無い .ofd では表の代わりに理由を出す (空表を放置しない)
+    m_obsTable->setVisible(rows > 0);
+    if (rows == 0) m_obsTable->setToolTip(I18n::tr("acs_obs_none"));
+    else m_obsTable->setToolTip(I18n::tr("acs_obs_note"));
 }
 
 // feed 表を .ofd の feed 行に合わせて作り直す (model → widgets)。
@@ -852,6 +987,7 @@ void AcousticSolverTab::refresh()
     m_multiSource->setChecked(m_p->acoustic().multiSource);
     m_angleDep->setChecked(m_p->acoustic().angleDependentAbsorption);
     refreshFeedTable();
+    refreshObsTable();
     // 外部プロセス設定は ExternalFDTD / ExternalGeometric のみ
     const bool ext = s.solverBackend == 3 || s.solverBackend == 4;
     m_extGroup->setVisible(ext);

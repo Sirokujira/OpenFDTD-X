@@ -806,6 +806,21 @@ QByteArray OfdxIO::serialize(const Project &p)
         // FDTD / 幾何音響の両ソルバーが読むため (片方だけ切り替わると
         // ハイブリッドのクロスオーバーで壁が食い違う)。
         if (a.angleDependentAbsorption) ac["angle_dependent_absorption"] = true;
+        // 障害物の材質 (ADR-0012) — 行が無ければキー自体を書かない
+        // (旧ファイルとバイト一致。絶対規則 2)。acoustic 直下 = 両ソルバーが
+        // 読む。各行の他のキー (name / scattering 等) はそのまま書き戻す。
+        if (!a.obstacleMaterials.isEmpty()) {
+            QJsonArray obs;
+            for (const AcousticOpts::ObstacleMaterial &m : a.obstacleMaterials) {
+                QJsonObject o = m.extra;
+                QJsonArray al;
+                for (double v : m.alpha) al.append(v);
+                o["geometry"] = m.geometry;
+                o["alpha"] = al;
+                obs.append(o);
+            }
+            ac["obstacles"] = obs;
+        }
         {   // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — 全行が既定
             // (gain = 1, delay = 0) ならキー自体を書かない (旧ファイルと
             // バイト一致。絶対規則 2)。キー名が "sources" でないのは、
@@ -1533,6 +1548,27 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         // 角度依存吸音 (ADR-0011) — 追加キー。欠落時は false (旧ファイル互換)
         a.angleDependentAbsorption = ac.value("angle_dependent_absorption")
                                          .toBool(a.angleDependentAbsorption);
+        // 障害物の材質 (ADR-0012) — 追加キー。欠落時は空 (全障害物が剛体)。
+        // alpha の足りないバンドは最後の値で外挿 (ソルバーと同じ規則)、
+        // 0..1 にクランプ。他のキーは extra に保持して書き戻す。
+        if (ac.contains("obstacles")) {
+            a.obstacleMaterials.clear();
+            for (const QJsonValue &v : ac["obstacles"].toArray()) {
+                QJsonObject o = v.toObject();
+                AcousticOpts::ObstacleMaterial m;
+                m.geometry = o.value("geometry").toInt(0);
+                const QJsonArray al = o.value("alpha").toArray();
+                for (int b = 0; b < 6; ++b) {
+                    const double x = al.isEmpty() ? 0.0
+                        : al.at(qMin(b, al.size() - 1)).toDouble(0.0);
+                    m.alpha[b] = qBound(0.0, x, 1.0);
+                }
+                o.remove("geometry");
+                o.remove("alpha");
+                m.extra = o;
+                a.obstacleMaterials.push_back(m);
+            }
+        }
         if (ac.contains("absorption")) {
             a.absorption.clear();
             for (const QJsonValue &v : ac["absorption"].toArray()) {

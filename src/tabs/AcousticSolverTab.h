@@ -37,6 +37,8 @@ public:
 private:
     // feed 表を .ofd の feed 行に合わせて作り直す (refresh から呼ぶ)
     void refreshFeedTable();
+    // 障害物の材質表を geometries() に合わせて作り直す (refresh から呼ぶ)
+    void refreshObsTable();
 
 public:
 
@@ -91,6 +93,9 @@ private:
     // 行は .ofd の feed 行と 1 対 1 (行数は refresh で feeds().size() に
     // 合わせる)。ゲイン/遅延のセルは QDoubleSpinBox で契約の値域を保証する。
     QTableWidget *m_feedTable = nullptr;
+    // 障害物の材質 (.ofdx acoustic.obstacles — ADR-0012)。行は .ofd の
+    // geometry 行と 1 対 1。列 = 番号 / 形状 / 材質あり / α 125..4k Hz (6)。
+    QTableWidget *m_obsTable = nullptr;
     QPushButton  *m_btnRun = nullptr, *m_btnStop = nullptr;
     QLabel       *m_resolved = nullptr;    // 解決されたバイナリ or 未検出
     QLabel       *m_status = nullptr;
