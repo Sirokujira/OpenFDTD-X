@@ -10,10 +10,12 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <cmath>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QFormLayout>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -277,6 +279,33 @@ const bool s_i18n = [] {
         "faces. Obstacles left off are rigid. Rows map 1:1 to the geometry "
         "lines of the .ofd and follow inserts/deletes in the Geometry tab. "
         "Transmission is not modelled (ADR-0012).");
+    I18n::reg("acs_ga", "幾何音響ソルバーの設定 (acoustic.ga)",
+              "Geometric solver settings (acoustic.ga)");
+    I18n::reg("acs_ga_note",
+        "ofdx_acoustic_ga だけが読む設定 (FDTD は acoustic.ga を読み飛ばす)。"
+        "既定値のままの項目は .ofdx に書かない — 書かれた項目だけがソルバーの"
+        "既定を上書きする。値域はソルバーと同じ (範囲外はソルバーが非零終了する)。"
+        "ここに無い手書きのキー (acoustic.ga.obstacles、バンド別の scattering "
+        "配列など) は保存しても消えない (ADR-0013)。",
+        "Read by ofdx_acoustic_ga only (FDTD skips acoustic.ga). Items left at "
+        "their defaults are not written to the .ofdx — only written items "
+        "override the solver defaults. Ranges match the solver (out-of-range "
+        "values make it exit with an error). Hand-written keys not shown here "
+        "(acoustic.ga.obstacles, a per-band scattering array, ...) survive "
+        "saving (ADR-0013).");
+    I18n::reg("acs_ga_order", "鏡像法の次数", "Image-source order");
+    I18n::reg("acs_ga_rays", "レイ本数", "Rays");
+    I18n::reg("acs_ga_scatter", "散乱係数 (室の既定)", "Scattering (room default)");
+    I18n::reg("acs_ga_scatter_array",
+        ".ofdx にバンド別の配列が書かれている — ここでは編集しない (保存しても残る)",
+        "The .ofdx holds a per-band array — not editable here (kept on save)");
+    I18n::reg("acs_ga_air", "空気吸収 (ISO 9613-1)", "Air absorption (ISO 9613-1)");
+    I18n::reg("acs_ga_temp", "温度 [°C]", "Temperature [°C]");
+    I18n::reg("acs_ga_humid", "相対湿度 [%]", "Relative humidity [%]");
+    I18n::reg("acs_ga_press", "気圧 [kPa]", "Pressure [kPa]");
+    I18n::reg("acs_ga_radius", "受音球の半径 [m]", "Receiver sphere radius [m]");
+    I18n::reg("acs_ga_duration", "計算時間 [s]", "Duration [s]");
+    I18n::reg("acs_ga_auto", "自動", "Auto");
     I18n::reg("acs_obs_col_no", "#", "#");
     I18n::reg("acs_obs_col_shape", "形状", "Shape");
     I18n::reg("acs_obs_col_on", "材質あり", "Material");
@@ -535,6 +564,63 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
         m_obsTable->setToolTip(I18n::tr("acs_obs_note"));
         m_obsTable->setMinimumHeight(3 * 26 + 40);
         ev->addWidget(m_obsTable);
+    }
+
+    // 幾何音響ソルバーの設定 (ADR-0013) — .ofdx acoustic.ga。値域は
+    // ソルバー (OpenAcoustics ReadMe の acoustic.ga 表) と同じ。
+    {
+        auto *gl = new QLabel(I18n::tr("acs_ga"), m_extGroup);
+        gl->setToolTip(I18n::tr("acs_ga_note"));
+        ev->addWidget(gl);
+        auto *gf = new QFormLayout();
+        m_gaOrder = new QSpinBox(m_extGroup);
+        m_gaOrder->setRange(1, 3);
+        gf->addRow(I18n::tr("acs_ga_order"), m_gaOrder);
+        m_gaRays = new QSpinBox(m_extGroup);
+        m_gaRays->setRange(100, 2000000);
+        m_gaRays->setSingleStep(1000);
+        gf->addRow(I18n::tr("acs_ga_rays"), m_gaRays);
+        m_gaScatter = new QDoubleSpinBox(m_extGroup);
+        m_gaScatter->setRange(0.0, 1.0);
+        m_gaScatter->setDecimals(3);
+        m_gaScatter->setSingleStep(0.05);
+        gf->addRow(I18n::tr("acs_ga_scatter"), m_gaScatter);
+        m_gaAir = new QCheckBox(I18n::tr("acs_ga_air"), m_extGroup);
+        gf->addRow(QString(), m_gaAir);
+        auto dspin = [this](double lo, double hi, int dec, double step) {
+            auto *sp = new QDoubleSpinBox(m_extGroup);
+            sp->setRange(lo, hi);
+            sp->setDecimals(dec);
+            sp->setSingleStep(step);
+            return sp;
+        };
+        m_gaTemp = dspin(-20.0, 50.0, 3, 1.0);
+        gf->addRow(I18n::tr("acs_ga_temp"), m_gaTemp);
+        m_gaHumid = dspin(0.0, 100.0, 3, 5.0);
+        gf->addRow(I18n::tr("acs_ga_humid"), m_gaHumid);
+        m_gaPress = dspin(50.0, 120.0, 3, 1.0);
+        gf->addRow(I18n::tr("acs_ga_press"), m_gaPress);
+        // 半径・計算時間は「自動」(キーを書かない) が既定。ソルバーは 0 を
+        // 受け付けないので下限は 0.001
+        auto autoRow = [&](const char *key, QCheckBox *&cb, QDoubleSpinBox *&sp) {
+            auto *row = new QHBoxLayout();
+            cb = new QCheckBox(I18n::tr("acs_ga_auto"), m_extGroup);
+            sp = dspin(0.001, 10.0, 3, 0.1);
+            row->addWidget(cb);
+            row->addWidget(sp, 1);
+            gf->addRow(I18n::tr(key), row);
+        };
+        autoRow("acs_ga_radius", m_gaRadiusAuto, m_gaRadius);
+        autoRow("acs_ga_duration", m_gaDurAuto, m_gaDur);
+        ev->addLayout(gf);
+        for (QSpinBox *sp : { m_gaOrder, m_gaRays })
+            connect(sp, &QSpinBox::valueChanged, this, [this](int) { apply(); });
+        for (QDoubleSpinBox *sp : { m_gaScatter, m_gaTemp, m_gaHumid, m_gaPress,
+                                    m_gaRadius, m_gaDur })
+            connect(sp, &QDoubleSpinBox::valueChanged, this,
+                    [this](double) { apply(); });
+        for (QCheckBox *cb : { m_gaAir, m_gaRadiusAuto, m_gaDurAuto })
+            connect(cb, &QCheckBox::toggled, this, [this](bool) { apply(); });
     }
 
     // 解決結果のライブ表示 (実環境の探索結果 — サンプル値ではない)
@@ -856,6 +942,52 @@ void AcousticSolverTab::apply()
         }
         m_p->acoustic().obstacleMaterials = om;
     }
+    // 幾何音響ソルバーの設定 (ADR-0013)。利用者が動かした項目だけを反映する
+    // (表示の丸め以上に値が変わったときだけ — refresh が表示した値を書き
+    // 戻して手書きの細かい値を潰さないため)。既定値にした項目は「未設定」に
+    // 戻してキーを書かない。
+    {
+        AcousticOpts::GaParams &g = m_p->acoustic().ga;
+        const AcousticOpts::GaParams d;
+        auto moved = [](double w, double m, int dec) {
+            return std::abs(w - m) > 0.5 * std::pow(10.0, -dec);
+        };
+        if (m_gaOrder->value() != g.imageOrder) {
+            g.imageOrder = m_gaOrder->value();
+            g.hasImageOrder = g.imageOrder != d.imageOrder;
+        }
+        if (m_gaRays->value() != g.rays) {
+            g.rays = m_gaRays->value();
+            g.hasRays = g.rays != d.rays;
+        }
+        if (!g.scatteringIsArray
+            && moved(m_gaScatter->value(), g.scattering, m_gaScatter->decimals())) {
+            g.scattering = m_gaScatter->value();
+            g.hasScattering = g.scattering != d.scattering;
+        }
+        if (m_gaAir->isChecked() != g.airAbsorption) {
+            g.airAbsorption = m_gaAir->isChecked();
+            g.hasAir = g.airAbsorption != d.airAbsorption;
+        }
+        if (moved(m_gaTemp->value(), g.temperatureC, m_gaTemp->decimals())) {
+            g.temperatureC = m_gaTemp->value();
+            g.hasTemp = g.temperatureC != d.temperatureC;
+        }
+        if (moved(m_gaHumid->value(), g.humidityPct, m_gaHumid->decimals())) {
+            g.humidityPct = m_gaHumid->value();
+            g.hasHumid = g.humidityPct != d.humidityPct;
+        }
+        if (moved(m_gaPress->value(), g.pressureKpa, m_gaPress->decimals())) {
+            g.pressureKpa = m_gaPress->value();
+            g.hasPress = g.pressureKpa != d.pressureKpa;
+        }
+        if (m_gaRadiusAuto->isChecked() == g.hasRadius) g.hasRadius = !m_gaRadiusAuto->isChecked();
+        if (g.hasRadius && moved(m_gaRadius->value(), g.receiverRadiusM, m_gaRadius->decimals()))
+            g.receiverRadiusM = m_gaRadius->value();
+        if (m_gaDurAuto->isChecked() == g.hasDuration) g.hasDuration = !m_gaDurAuto->isChecked();
+        if (g.hasDuration && moved(m_gaDur->value(), g.durationS, m_gaDur->decimals()))
+            g.durationS = m_gaDur->value();
+    }
     m_p->touch();
 }
 
@@ -988,6 +1120,27 @@ void AcousticSolverTab::refresh()
     m_angleDep->setChecked(m_p->acoustic().angleDependentAbsorption);
     refreshFeedTable();
     refreshObsTable();
+    {   // 幾何音響ソルバーの設定 (ADR-0013) — 未設定の項目はソルバー既定を表示
+        const AcousticOpts::GaParams &g = m_p->acoustic().ga;
+        m_gaOrder->setValue(g.imageOrder);
+        m_gaRays->setValue(g.rays);
+        m_gaScatter->setValue(g.scattering);
+        m_gaScatter->setEnabled(!g.scatteringIsArray);
+        m_gaScatter->setToolTip(g.scatteringIsArray ? I18n::tr("acs_ga_scatter_array")
+                                                    : QString());
+        m_gaAir->setChecked(g.airAbsorption);
+        m_gaTemp->setValue(g.temperatureC);
+        m_gaHumid->setValue(g.humidityPct);
+        m_gaPress->setValue(g.pressureKpa);
+        for (QDoubleSpinBox *sp : { m_gaTemp, m_gaHumid, m_gaPress })
+            sp->setEnabled(g.airAbsorption);      // 空気吸収オフでは効かない
+        m_gaRadiusAuto->setChecked(!g.hasRadius);
+        m_gaRadius->setValue(g.receiverRadiusM);
+        m_gaRadius->setEnabled(g.hasRadius);
+        m_gaDurAuto->setChecked(!g.hasDuration);
+        m_gaDur->setValue(g.durationS);
+        m_gaDur->setEnabled(g.hasDuration);
+    }
     // 外部プロセス設定は ExternalFDTD / ExternalGeometric のみ
     const bool ext = s.solverBackend == 3 || s.solverBackend == 4;
     m_extGroup->setVisible(ext);

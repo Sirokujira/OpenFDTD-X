@@ -4125,6 +4125,94 @@ static void testAudioEditEngine()
                   "obs-ofdx: missing key falls back to no materials (rigid)");
         }
 
+        // ── 幾何音響ソルバーの設定 (.ofdx acoustic.ga — ADR-0013) ──
+        // 明示した項目だけを書き (全部未設定ならキー自体を書かない)、ここで
+        // 扱わない手書きの子キー (obstacles / バンド別 scattering 配列) は
+        // 未知キー保持で残り、既定に戻した項目は古い値で復活しないこと。
+        {
+            ofd::Project gp;
+            QString e8;
+            const QString p8 = dir.filePath("gaopt.ofd");
+            const QString sc8 = dir.filePath("gaopt.ofdx");
+            auto bytes8 = [&] {
+                QFile f(sc8);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto ga8 = [&] {
+                return QJsonDocument::fromJson(bytes8()).object()
+                    .value("acoustic").toObject().value("ga").toObject();
+            };
+            check(gp.save(p8, &e8), "ga-ofdx: default saved");
+            const QByteArray base8 = bytes8();
+            check(!QJsonDocument::fromJson(base8).object().value("acoustic")
+                       .toObject().contains("ga"),
+                  "ga-ofdx: defaults write no ga key");
+
+            gp.acoustic().ga.hasImageOrder = true; gp.acoustic().ga.imageOrder = 3;
+            gp.acoustic().ga.hasRays = true;       gp.acoustic().ga.rays = 50000;
+            check(gp.save(p8, &e8), "ga-ofdx: settings saved");
+            {
+                const QJsonObject g = ga8();
+                check(g.value("image_order").toInt() == 3 && g.value("rays").toInt() == 50000,
+                      "ga-ofdx: writes the explicit items under acoustic.ga");
+                check(g.size() == 2,
+                      "ga-ofdx: items left unset are not written (solver defaults)");
+            }
+            ofd::Project rd8;
+            check(rd8.load(p8, &e8), "ga-ofdx: reloaded");
+            check(rd8.acoustic().ga.hasImageOrder && rd8.acoustic().ga.imageOrder == 3
+                  && rd8.acoustic().ga.hasRays && rd8.acoustic().ga.rays == 50000
+                  && !rd8.acoustic().ga.hasScattering,
+                  "ga-ofdx: round-trips the explicit items only");
+
+            {   // 手書きの acoustic.ga : GUI が扱わない子キーは保存しても残る
+                QJsonObject root = QJsonDocument::fromJson(bytes8()).object();
+                QJsonObject ac = root.value("acoustic").toObject();
+                ac["ga"] = QJsonObject{
+                    {"image_order", 3}, {"temperature_c", 20.25},
+                    {"scattering", QJsonArray{0.1, 0.2, 0.3}},
+                    {"obstacles", QJsonArray{ QJsonObject{{"geometry", 1},
+                                                          {"scattering", 1.0}} }} };
+                root["acoustic"] = ac;
+                QFile f(sc8);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                      && f.write(QJsonDocument(root).toJson()) > 0,
+                      "ga-ofdx: hand-written ga prepared");
+                f.close();
+            }
+            ofd::Project hw8;
+            check(hw8.load(p8, &e8), "ga-ofdx: hand-written ga loaded");
+            check(hw8.acoustic().ga.scatteringIsArray && !hw8.acoustic().ga.hasScattering
+                  && hw8.acoustic().ga.temperatureC == 20.25,
+                  "ga-ofdx: per-band scattering array is recognised (not edited)");
+            check(hw8.save(p8, &e8), "ga-ofdx: hand-written ga re-saved");
+            {
+                const QJsonObject g = ga8();
+                check(g.value("scattering").isArray() && g.value("obstacles").isArray()
+                      && g.value("temperature_c").toDouble() == 20.25
+                      && g.value("image_order").toInt() == 3,
+                      "ga-ofdx: keys the GUI does not model survive saving");
+            }
+            hw8.acoustic().ga.hasImageOrder = false;   // 既定に戻す
+            hw8.acoustic().ga.imageOrder = 2;
+            check(hw8.save(p8, &e8), "ga-ofdx: reset item saved");
+            {
+                const QJsonObject g = ga8();
+                check(!g.contains("image_order") && g.value("obstacles").isArray(),
+                      "ga-ofdx: an item reset to its default is not revived from the file");
+            }
+
+            rd8.acoustic().ga = ofd::AcousticOpts::GaParams{};
+            check(rd8.save(p8, &e8), "ga-ofdx: reverted saved");
+            check(bytes8() == base8,
+                  "ga-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o8;
+            check(!o8.acoustic().ga.hasImageOrder && !o8.acoustic().ga.hasRadius
+                  && !o8.acoustic().ga.hasDuration,
+                  "ga-ofdx: missing key falls back to solver defaults (auto)");
+        }
+
         // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —
         //    ADR-0010 Decision 7) ──
         // 追加キー: 全行が既定 (gain 1 / delay 0) ならキーを書かず、

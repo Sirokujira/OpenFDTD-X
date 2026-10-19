@@ -509,6 +509,28 @@ struct AcousticOpts {
     };
     QVector<ObstacleMaterial> obstacleMaterials;
 
+    // ── 幾何音響ソルバーの設定 (.ofdx "acoustic.ga" — ADR-0013) ──
+    // ofdx_acoustic_ga だけが読むキー (FDTD は acoustic.ga を丸ごと読み
+    // 飛ばす)。各キーは「ファイルか利用者が明示した」ときだけ書く (has*)。
+    // 未設定 = ソルバー側の既定。全部未設定ならキー自体を書かない
+    // (旧ファイルとバイト一致 — 絶対規則 2)。ここで扱わないキー
+    // (acoustic.ga.obstacles、バンド別の scattering 配列など) は .ofdx の
+    // 未知キー保持 (ADR-0003 案B) がそのまま書き戻す。既定値・値域は
+    // ソルバー (OpenAcoustics ReadMe の acoustic.ga 表) と同じ。
+    struct GaParams {
+        bool   hasImageOrder = false;  int    imageOrder = 2;        // 1..3
+        bool   hasRays = false;        int    rays = 30000;          // 100..2,000,000
+        bool   hasScattering = false;  double scattering = 0.1;      // 0..1 (室の既定)
+        bool   scatteringIsArray = false;  // ファイルがバンド別の配列 — GUI では編集しない
+        bool   hasAir = false;         bool   airAbsorption = true;
+        bool   hasTemp = false;        double temperatureC = 20.0;   // -20..50
+        bool   hasHumid = false;       double humidityPct = 50.0;    // 0..100
+        bool   hasPress = false;       double pressureKpa = 101.325; // 50..120
+        bool   hasRadius = false;      double receiverRadiusM = 0.5; // 0 < r <= 10 (未設定 = 自動)
+        bool   hasDuration = false;    double durationS = 2.0;       // 0 < T <= 10 (未設定 = 自動)
+    };
+    GaParams ga;
+
     // geometries() の 0 起点 at に行を挿入した / at の行を削除した
     void geometryInserted(int at) {
         for (ObstacleMaterial &m : obstacleMaterials)

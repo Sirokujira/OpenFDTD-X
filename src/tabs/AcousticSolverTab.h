@@ -12,6 +12,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -96,6 +97,14 @@ private:
     // 障害物の材質 (.ofdx acoustic.obstacles — ADR-0012)。行は .ofd の
     // geometry 行と 1 対 1。列 = 番号 / 形状 / 材質あり / α 125..4k Hz (6)。
     QTableWidget *m_obsTable = nullptr;
+    // 幾何音響ソルバーの設定 (.ofdx acoustic.ga — ADR-0013)。値域は
+    // ソルバーの契約と同じ (範囲外はソルバーが非零終了するので UI で防ぐ)。
+    QSpinBox       *m_gaOrder = nullptr, *m_gaRays = nullptr;
+    QDoubleSpinBox *m_gaScatter = nullptr;
+    QCheckBox      *m_gaAir = nullptr;
+    QDoubleSpinBox *m_gaTemp = nullptr, *m_gaHumid = nullptr, *m_gaPress = nullptr;
+    QCheckBox      *m_gaRadiusAuto = nullptr, *m_gaDurAuto = nullptr;
+    QDoubleSpinBox *m_gaRadius = nullptr, *m_gaDur = nullptr;
     QPushButton  *m_btnRun = nullptr, *m_btnStop = nullptr;
     QLabel       *m_resolved = nullptr;    // 解決されたバイナリ or 未検出
     QLabel       *m_status = nullptr;
