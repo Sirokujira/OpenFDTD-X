@@ -3965,6 +3965,254 @@ static void testAudioEditEngine()
                   "msrc-ofdx: missing key falls back to false (feed #1 only)");
         }
 
+        // ── 角度依存吸音 (.ofdx acoustic.angle_dependent_absorption —
+        //    ADR-0011) ──
+        // 同じく追加キー: 既定 (false) ならキーを書かず、戻せばバイト一致。
+        // 両ソルバーが acoustic 直下で読むので、acoustic.ga の中ではなく
+        // acoustic 直下に出ること (ソルバー側の FDTD は acoustic.ga を丸ごと
+        // 読み飛ばす) も確かめる。
+        {
+            ofd::Project ap;
+            QString e6;
+            const QString p6 = dir.filePath("angdep.ofd");
+            const QString sc6 = dir.filePath("angdep.ofdx");
+            auto bytes6 = [&] {
+                QFile f(sc6);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(ap.save(p6, &e6), "angdep-ofdx: default saved");
+            const QByteArray base6 = bytes6();
+            check(!base6.contains("angle_dependent_absorption"),
+                  "angdep-ofdx: defaults write no angle_dependent_absorption key");
+
+            ap.acoustic().angleDependentAbsorption = true;
+            check(ap.save(p6, &e6), "angdep-ofdx: enabled saved");
+            check(bytes6().contains("\"angle_dependent_absorption\": true"),
+                  "angdep-ofdx: enabling writes angle_dependent_absorption: true");
+            {
+                QFile f(sc6);
+                const QJsonObject ac = f.open(QIODevice::ReadOnly)
+                    ? QJsonDocument::fromJson(f.readAll()).object()
+                          .value("acoustic").toObject()
+                    : QJsonObject();
+                check(ac.value("angle_dependent_absorption").toBool(false),
+                      "angdep-ofdx: key sits directly under acoustic (both solvers read it)");
+            }
+
+            ofd::Project rd6;
+            check(rd6.load(p6, &e6), "angdep-ofdx: reloaded");
+            check(rd6.acoustic().angleDependentAbsorption,
+                  "angdep-ofdx: round-trips the angle-dependent flag");
+            check(!rd6.acoustic().multiSource,
+                  "angdep-ofdx: independent of the multi-source flag");
+
+            rd6.acoustic().angleDependentAbsorption = false;
+            check(rd6.save(p6, &e6), "angdep-ofdx: reverted saved");
+            check(bytes6() == base6,
+                  "angdep-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o6;
+            check(!o6.acoustic().angleDependentAbsorption,
+                  "angdep-ofdx: missing key falls back to false (normal incidence)");
+        }
+
+        // ── 障害物の材質 (.ofdx acoustic.obstacles — ADR-0012) ──
+        // 追加キー: 行が無ければキーを書かず、戻せばバイト一致。acoustic 直下に
+        // 出ること、各行の他のキー (幾何音響の scattering 等) が往復で落ちない
+        // こと、手書きの短い alpha が最後の値で外挿されること、geometry の
+        // 挿入・削除で番号が追随することを確かめる。
+        {
+            ofd::Project op;
+            QString e7;
+            const QString p7 = dir.filePath("obs.ofd");
+            const QString sc7 = dir.filePath("obs.ofdx");
+            auto bytes7 = [&] {
+                QFile f(sc7);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto acoustic7 = [&] {
+                return QJsonDocument::fromJson(bytes7()).object()
+                    .value("acoustic").toObject();
+            };
+            check(op.save(p7, &e7), "obs-ofdx: default saved");
+            const QByteArray base7 = bytes7();
+            check(!acoustic7().contains("obstacles"),
+                  "obs-ofdx: defaults write no obstacles key");
+
+            ofd::AcousticOpts::ObstacleMaterial m;
+            m.geometry = 2;
+            const double al[6] = {0.10, 0.12, 0.16, 0.20, 0.24, 0.30};
+            for (int b = 0; b < 6; ++b) m.alpha[b] = al[b];
+            m.extra["scattering"] = 0.4;
+            m.extra["name"] = QStringLiteral("stage riser");
+            op.acoustic().obstacleMaterials = { m };
+            check(op.save(p7, &e7), "obs-ofdx: material saved");
+            {
+                const QJsonArray obs = acoustic7().value("obstacles").toArray();
+                const QJsonObject o = obs.isEmpty() ? QJsonObject()
+                                                    : obs.at(0).toObject();
+                check(obs.size() == 1 && o.value("geometry").toInt() == 2,
+                      "obs-ofdx: row sits directly under acoustic with its geometry index");
+                check(o.value("alpha").toArray().size() == 6
+                      && o.value("alpha").toArray().at(5).toDouble() == 0.30,
+                      "obs-ofdx: writes the six band alphas");
+                check(o.value("scattering").toDouble() == 0.4
+                      && o.value("name").toString() == QStringLiteral("stage riser"),
+                      "obs-ofdx: keeps the other keys of the row (scattering, name)");
+            }
+
+            ofd::Project rd7;
+            check(rd7.load(p7, &e7), "obs-ofdx: reloaded");
+            {
+                const auto &om = rd7.acoustic().obstacleMaterials;
+                bool same = om.size() == 1 && om[0].geometry == 2;
+                for (int b = 0; same && b < 6; ++b) same = om[0].alpha[b] == al[b];
+                check(same, "obs-ofdx: round-trips geometry index and alphas");
+                check(om.size() == 1 && om[0].extra.value("scattering").toDouble() == 0.4,
+                      "obs-ofdx: round-trips the extra keys");
+            }
+            check(rd7.save(p7, &e7) && acoustic7().value("obstacles").toArray()
+                      .at(0).toObject().value("scattering").toDouble() == 0.4,
+                  "obs-ofdx: load -> save keeps the geometric solver's scattering");
+
+            {   // 手書きの短い alpha は最後の値で外挿 (ソルバーと同じ規則)、
+                // 範囲外は 0..1 にクランプ
+                QJsonObject root = QJsonDocument::fromJson(bytes7()).object();
+                QJsonObject ac = root.value("acoustic").toObject();
+                ac["obstacles"] = QJsonArray{ QJsonObject{
+                    {"geometry", 1}, {"alpha", QJsonArray{0.2, 1.5}} } };
+                root["acoustic"] = ac;
+                QFile f(sc7);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                      && f.write(QJsonDocument(root).toJson()) > 0,
+                      "obs-ofdx: hand-written short row prepared");
+                f.close();
+                ofd::Project hw;
+                check(hw.load(p7, &e7), "obs-ofdx: hand-written row loaded");
+                const auto &om = hw.acoustic().obstacleMaterials;
+                check(om.size() == 1 && om[0].alpha[0] == 0.2
+                      && om[0].alpha[1] == 1.0 && om[0].alpha[5] == 1.0,
+                      "obs-ofdx: short alpha extrapolated by its last value and clamped");
+            }
+
+            {   // geometry の挿入・削除で番号が追随する
+                ofd::AcousticOpts a;
+                ofd::AcousticOpts::ObstacleMaterial m1, m3;
+                m1.geometry = 1; m3.geometry = 3;
+                a.obstacleMaterials = { m1, m3 };
+                a.geometryRemoved(1);            // geometry #2 を削除
+                check(a.obstacleMaterials.size() == 2
+                      && a.obstacleMaterials[0].geometry == 1
+                      && a.obstacleMaterials[1].geometry == 2,
+                      "obs-ofdx: deleting a geometry shifts the later indices down");
+                a.geometryRemoved(0);            // geometry #1 (材質あり) を削除
+                check(a.obstacleMaterials.size() == 1
+                      && a.obstacleMaterials[0].geometry == 1,
+                      "obs-ofdx: deleting a geometry drops its own material");
+                a.geometryInserted(0);           // 先頭に挿入
+                check(a.obstacleMaterials.size() == 1
+                      && a.obstacleMaterials[0].geometry == 2,
+                      "obs-ofdx: inserting a geometry shifts the later indices up");
+            }
+
+            rd7.acoustic().obstacleMaterials.clear();
+            check(rd7.save(p7, &e7), "obs-ofdx: reverted saved");
+            check(bytes7() == base7,
+                  "obs-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o7;
+            check(o7.acoustic().obstacleMaterials.isEmpty(),
+                  "obs-ofdx: missing key falls back to no materials (rigid)");
+        }
+
+        // ── 幾何音響ソルバーの設定 (.ofdx acoustic.ga — ADR-0013) ──
+        // 明示した項目だけを書き (全部未設定ならキー自体を書かない)、ここで
+        // 扱わない手書きの子キー (obstacles / バンド別 scattering 配列) は
+        // 未知キー保持で残り、既定に戻した項目は古い値で復活しないこと。
+        {
+            ofd::Project gp;
+            QString e8;
+            const QString p8 = dir.filePath("gaopt.ofd");
+            const QString sc8 = dir.filePath("gaopt.ofdx");
+            auto bytes8 = [&] {
+                QFile f(sc8);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto ga8 = [&] {
+                return QJsonDocument::fromJson(bytes8()).object()
+                    .value("acoustic").toObject().value("ga").toObject();
+            };
+            check(gp.save(p8, &e8), "ga-ofdx: default saved");
+            const QByteArray base8 = bytes8();
+            check(!QJsonDocument::fromJson(base8).object().value("acoustic")
+                       .toObject().contains("ga"),
+                  "ga-ofdx: defaults write no ga key");
+
+            gp.acoustic().ga.hasImageOrder = true; gp.acoustic().ga.imageOrder = 3;
+            gp.acoustic().ga.hasRays = true;       gp.acoustic().ga.rays = 50000;
+            check(gp.save(p8, &e8), "ga-ofdx: settings saved");
+            {
+                const QJsonObject g = ga8();
+                check(g.value("image_order").toInt() == 3 && g.value("rays").toInt() == 50000,
+                      "ga-ofdx: writes the explicit items under acoustic.ga");
+                check(g.size() == 2,
+                      "ga-ofdx: items left unset are not written (solver defaults)");
+            }
+            ofd::Project rd8;
+            check(rd8.load(p8, &e8), "ga-ofdx: reloaded");
+            check(rd8.acoustic().ga.hasImageOrder && rd8.acoustic().ga.imageOrder == 3
+                  && rd8.acoustic().ga.hasRays && rd8.acoustic().ga.rays == 50000
+                  && !rd8.acoustic().ga.hasScattering,
+                  "ga-ofdx: round-trips the explicit items only");
+
+            {   // 手書きの acoustic.ga : GUI が扱わない子キーは保存しても残る
+                QJsonObject root = QJsonDocument::fromJson(bytes8()).object();
+                QJsonObject ac = root.value("acoustic").toObject();
+                ac["ga"] = QJsonObject{
+                    {"image_order", 3}, {"temperature_c", 20.25},
+                    {"scattering", QJsonArray{0.1, 0.2, 0.3}},
+                    {"obstacles", QJsonArray{ QJsonObject{{"geometry", 1},
+                                                          {"scattering", 1.0}} }} };
+                root["acoustic"] = ac;
+                QFile f(sc8);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                      && f.write(QJsonDocument(root).toJson()) > 0,
+                      "ga-ofdx: hand-written ga prepared");
+                f.close();
+            }
+            ofd::Project hw8;
+            check(hw8.load(p8, &e8), "ga-ofdx: hand-written ga loaded");
+            check(hw8.acoustic().ga.scatteringIsArray && !hw8.acoustic().ga.hasScattering
+                  && hw8.acoustic().ga.temperatureC == 20.25,
+                  "ga-ofdx: per-band scattering array is recognised (not edited)");
+            check(hw8.save(p8, &e8), "ga-ofdx: hand-written ga re-saved");
+            {
+                const QJsonObject g = ga8();
+                check(g.value("scattering").isArray() && g.value("obstacles").isArray()
+                      && g.value("temperature_c").toDouble() == 20.25
+                      && g.value("image_order").toInt() == 3,
+                      "ga-ofdx: keys the GUI does not model survive saving");
+            }
+            hw8.acoustic().ga.hasImageOrder = false;   // 既定に戻す
+            hw8.acoustic().ga.imageOrder = 2;
+            check(hw8.save(p8, &e8), "ga-ofdx: reset item saved");
+            {
+                const QJsonObject g = ga8();
+                check(!g.contains("image_order") && g.value("obstacles").isArray(),
+                      "ga-ofdx: an item reset to its default is not revived from the file");
+            }
+
+            rd8.acoustic().ga = ofd::AcousticOpts::GaParams{};
+            check(rd8.save(p8, &e8), "ga-ofdx: reverted saved");
+            check(bytes8() == base8,
+                  "ga-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o8;
+            check(!o8.acoustic().ga.hasImageOrder && !o8.acoustic().ga.hasRadius
+                  && !o8.acoustic().ga.hasDuration,
+                  "ga-ofdx: missing key falls back to solver defaults (auto)");
+        }
+
         // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —
         //    ADR-0010 Decision 7) ──
         // 追加キー: 全行が既定 (gain 1 / delay 0) ならキーを書かず、

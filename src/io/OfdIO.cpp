@@ -801,6 +801,44 @@ QByteArray OfdxIO::serialize(const Project &p)
         // 2 本が .ofd の全 feed を強度 1・t = 0 で同時発火した重ね合わせを
         // rir.wav に出す (両ソルバーが同じキーを読む — 対称が契約の一部)。
         if (a.multiSource) ac["multi_source"] = true;
+        // 角度依存吸音 (ADR-0011) — 既定 (false) ならキー自体を書かない
+        // (旧ファイルとバイト一致。絶対規則 2)。acoustic 直下に置くのは
+        // FDTD / 幾何音響の両ソルバーが読むため (片方だけ切り替わると
+        // ハイブリッドのクロスオーバーで壁が食い違う)。
+        if (a.angleDependentAbsorption) ac["angle_dependent_absorption"] = true;
+        {   // 幾何音響ソルバーの設定 (ADR-0013) — 明示されたキーだけ書き、
+            // 1 つも無ければ "ga" 自体を書かない (旧ファイルとバイト一致。
+            // 絶対規則 2)。ここで扱わない子キー (obstacles、scattering 配列
+            // など) は未知キー保持 (ADR-0003 案B) が "ga" の中へ書き戻す。
+            const AcousticOpts::GaParams &g = a.ga;
+            QJsonObject go;
+            if (g.hasImageOrder) go["image_order"] = g.imageOrder;
+            if (g.hasRays) go["rays"] = g.rays;
+            if (g.hasScattering && !g.scatteringIsArray)
+                go["scattering"] = g.scattering;
+            if (g.hasAir) go["air_absorption"] = g.airAbsorption;
+            if (g.hasTemp) go["temperature_c"] = g.temperatureC;
+            if (g.hasHumid) go["humidity_percent"] = g.humidityPct;
+            if (g.hasPress) go["pressure_kpa"] = g.pressureKpa;
+            if (g.hasRadius) go["receiver_radius_m"] = g.receiverRadiusM;
+            if (g.hasDuration) go["duration_s"] = g.durationS;
+            if (!go.isEmpty()) ac["ga"] = go;
+        }
+        // 障害物の材質 (ADR-0012) — 行が無ければキー自体を書かない
+        // (旧ファイルとバイト一致。絶対規則 2)。acoustic 直下 = 両ソルバーが
+        // 読む。各行の他のキー (name / scattering 等) はそのまま書き戻す。
+        if (!a.obstacleMaterials.isEmpty()) {
+            QJsonArray obs;
+            for (const AcousticOpts::ObstacleMaterial &m : a.obstacleMaterials) {
+                QJsonObject o = m.extra;
+                QJsonArray al;
+                for (double v : m.alpha) al.append(v);
+                o["geometry"] = m.geometry;
+                o["alpha"] = al;
+                obs.append(o);
+            }
+            ac["obstacles"] = obs;
+        }
         {   // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — 全行が既定
             // (gain = 1, delay = 0) ならキー自体を書かない (旧ファイルと
             // バイト一致。絶対規則 2)。キー名が "sources" でないのは、
@@ -1525,6 +1563,67 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         a.rtFormula = ac.value("rt_formula").toInt(a.rtFormula);
         // 複数音源 (ADR-0010) — 追加キー。欠落時は false (旧ファイル互換)
         a.multiSource = ac.value("multi_source").toBool(a.multiSource);
+        // 角度依存吸音 (ADR-0011) — 追加キー。欠落時は false (旧ファイル互換)
+        a.angleDependentAbsorption = ac.value("angle_dependent_absorption")
+                                         .toBool(a.angleDependentAbsorption);
+        // 幾何音響ソルバーの設定 (ADR-0013) — 欠落キーは未設定 (ソルバー既定)。
+        // scattering がバンド別の配列なら GUI では編集せず、未知キー保持で
+        // そのまま書き戻す (scatteringIsArray)。
+        if (ac.contains("ga") && ac["ga"].isObject()) {
+            const QJsonObject go = ac["ga"].toObject();
+            AcousticOpts::GaParams &g = a.ga;
+            if (go.contains("image_order")) {
+                g.hasImageOrder = true; g.imageOrder = go["image_order"].toInt(g.imageOrder);
+            }
+            if (go.contains("rays")) {
+                g.hasRays = true; g.rays = go["rays"].toInt(g.rays);
+            }
+            if (go.contains("scattering")) {
+                if (go["scattering"].isArray()) g.scatteringIsArray = true;
+                else { g.hasScattering = true;
+                       g.scattering = go["scattering"].toDouble(g.scattering); }
+            }
+            if (go.contains("air_absorption")) {
+                g.hasAir = true; g.airAbsorption = go["air_absorption"].toBool(g.airAbsorption);
+            }
+            if (go.contains("temperature_c")) {
+                g.hasTemp = true; g.temperatureC = go["temperature_c"].toDouble(g.temperatureC);
+            }
+            if (go.contains("humidity_percent")) {
+                g.hasHumid = true; g.humidityPct = go["humidity_percent"].toDouble(g.humidityPct);
+            }
+            if (go.contains("pressure_kpa")) {
+                g.hasPress = true; g.pressureKpa = go["pressure_kpa"].toDouble(g.pressureKpa);
+            }
+            if (go.contains("receiver_radius_m")) {
+                g.hasRadius = true;
+                g.receiverRadiusM = go["receiver_radius_m"].toDouble(g.receiverRadiusM);
+            }
+            if (go.contains("duration_s")) {
+                g.hasDuration = true; g.durationS = go["duration_s"].toDouble(g.durationS);
+            }
+        }
+        // 障害物の材質 (ADR-0012) — 追加キー。欠落時は空 (全障害物が剛体)。
+        // alpha の足りないバンドは最後の値で外挿 (ソルバーと同じ規則)、
+        // 0..1 にクランプ。他のキーは extra に保持して書き戻す。
+        if (ac.contains("obstacles")) {
+            a.obstacleMaterials.clear();
+            for (const QJsonValue &v : ac["obstacles"].toArray()) {
+                QJsonObject o = v.toObject();
+                AcousticOpts::ObstacleMaterial m;
+                m.geometry = o.value("geometry").toInt(0);
+                const QJsonArray al = o.value("alpha").toArray();
+                for (int b = 0; b < 6; ++b) {
+                    const double x = al.isEmpty() ? 0.0
+                        : al.at(qMin(b, al.size() - 1)).toDouble(0.0);
+                    m.alpha[b] = qBound(0.0, x, 1.0);
+                }
+                o.remove("geometry");
+                o.remove("alpha");
+                m.extra = o;
+                a.obstacleMaterials.push_back(m);
+            }
+        }
         if (ac.contains("absorption")) {
             a.absorption.clear();
             for (const QJsonValue &v : ac["absorption"].toArray()) {
