@@ -169,6 +169,15 @@ private:
     void refreshNoiseSources();   // 騒音源内訳: model → widgets
     void applyHallPreset();      // プリセットの V を AcousticOpts へ反映
     void refreshHallDerived();   // プリセット由来の派生表示を更新
+    // 可変音響: 表 (機構の有無・状態・面積) → 吸音バジェットへ適用した RT。
+    // 表の状態の T_mid と各機構の ΔT_mid を更新し、一括解析の結果が
+    // あれば入力が変わったものとして消す (古い結果を残さない)
+    void refreshVariableAcoustics();
+    void runVariableAcousticsBatch();   // 4 構成 (コンサート…) の比較表
+    void exportVariableAcousticsCsv();
+    QVector<roomac::VaMechanism> vaMechanismsFromTable() const;
+    QVector<int> vaStatesFromTable() const;
+    QVector<double> vaBatchKey() const;
     void receiverPos(int index, double out[3]) const;
     void sourcePos(double out[3]) const;
 
@@ -238,6 +247,14 @@ private:
 
     // ステージ/可変音響
     QLabel *m_stageRtBadge;
+    QTableWidget *m_vaTable = nullptr;        // 機構の有無・状態・面積・ΔT_mid
+    QVector<QComboBox *> m_vaState;           // 行ごとの状態 (0/1)
+    QVector<QDoubleSpinBox *> m_vaArea;       // 行ごとの面積 [m²]
+    QTableWidget *m_vaResult = nullptr;       // 一括解析の比較表
+    QLabel       *m_vaResultNote = nullptr;
+    QPushButton  *m_vaCsvBtn = nullptr;
+    bool          m_vaHasResult = false;      // 比較表が今の入力に対応しているか
+    QVector<double> m_vaResultKey;            // 表示中の一括解析が依存する値
 
     // reverb
     QDoubleSpinBox *m_roomL, *m_roomW, *m_roomH;

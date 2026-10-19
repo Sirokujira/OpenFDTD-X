@@ -211,5 +211,86 @@ int main() {
         CHECK(r.errorCode() == AcousticErrorCode::UnsupportedFormat);
     }
 
+    // ── ストリーミング読み (負債 #6): ファイル経路とメモリ経路の一致 ──
+    // 64 KiB のデコードブロックを複数跨ぐサイズで、ファイル経由の読みが
+    // メモリ経由とビット単位で一致すること (デコード式が同一である検証)。
+    {
+        std::vector<std::vector<double>> chans;
+        chans.push_back(makeSamples(50000, 0.0)); // 32bit stereo 50000 frames
+        chans.push_back(makeSamples(50000, 0.3)); // = 400000 B > 64 KiB × 6
+        const std::vector<unsigned char> bytes =
+            buildIntPcmWav(chans, 48000, 32, false);
+        const std::string path = tempPath("t_wav_stream_parity.wav");
+        std::FILE *fp = std::fopen(path.c_str(), "wb");
+        CHECK(fp != nullptr);
+        if (fp != nullptr) {
+            std::fwrite(bytes.data(), 1, bytes.size(), fp);
+            std::fclose(fp);
+            AcousticResult<AudioBuffer> mem =
+                readWavFromMemory(bytes.data(), bytes.size());
+            AcousticResult<AudioBuffer> fil = readWavFile(path);
+            CHECK(mem.success() && fil.success());
+            if (mem.success() && fil.success()) {
+                const AudioBuffer &a = mem.value();
+                const AudioBuffer &b = fil.value();
+                CHECK(a.sampleRateHz == b.sampleRateHz);
+                CHECK(a.channelCount() == b.channelCount() &&
+                      a.sampleCount() == b.sampleCount());
+                bool identical = true;
+                for (std::size_t c = 0; c < a.channelCount(); ++c)
+                    for (std::size_t i = 0; i < a.sampleCount(); ++i)
+                        if (a.channels[c][i] != b.channels[c][i])
+                            identical = false;
+                CHECK(identical); // ビット一致 (許容誤差なし)
+            }
+            std::remove(path.c_str());
+        }
+    }
+
+    // data チャンクが fmt より前に来るファイルも読める (2 パス走査の検証。
+    // 仕様上チャンク順は任意 — 旧実装も全チャンク収集後に解釈していた)
+    {
+        std::vector<std::vector<double>> chans;
+        chans.push_back(makeSamples(999, 0.1));
+        std::vector<unsigned char> wav = buildIntPcmWav(chans, 44100, 24, false);
+        // buildIntPcmWav の並びは [fmt(8+16)][data(8+N)] — これを入れ替える
+        const std::size_t fmtLen = 8 + 16;
+        std::vector<unsigned char> reordered(wav.begin(), wav.begin() + 12);
+        reordered.insert(reordered.end(), wav.begin() + 12 + fmtLen, wav.end());
+        reordered.insert(reordered.end(), wav.begin() + 12,
+                         wav.begin() + 12 + fmtLen);
+        const std::string path = tempPath("t_wav_data_first.wav");
+        std::FILE *fp = std::fopen(path.c_str(), "wb");
+        CHECK(fp != nullptr);
+        if (fp != nullptr) {
+            std::fwrite(reordered.data(), 1, reordered.size(), fp);
+            std::fclose(fp);
+            AcousticResult<AudioBuffer> r = readWavFile(path);
+            CHECK(r.success());
+            if (r.success()) checkBuffer(r.value(), chans, 44100.0, 3.0e-7);
+            std::remove(path.c_str());
+        }
+    }
+
+    // 切り詰められたファイル (data チャンクの宣言サイズ > 実サイズ) は
+    // ファイル経路でも FileReadError になる
+    {
+        std::vector<std::vector<double>> chans;
+        chans.push_back(makeSamples(999, 0.2));
+        std::vector<unsigned char> wav = buildIntPcmWav(chans, 48000, 32, false);
+        wav.resize(wav.size() - 100); // 末尾を欠く
+        const std::string path = tempPath("t_wav_truncated.wav");
+        std::FILE *fp = std::fopen(path.c_str(), "wb");
+        CHECK(fp != nullptr);
+        if (fp != nullptr) {
+            std::fwrite(wav.data(), 1, wav.size(), fp);
+            std::fclose(fp);
+            AcousticResult<AudioBuffer> r = readWavFile(path);
+            CHECK(!r.success());
+            CHECK(r.errorCode() == AcousticErrorCode::FileReadError);
+            std::remove(path.c_str());
+        }
+    }
+
     return testutil::summary("test_wav");
 }

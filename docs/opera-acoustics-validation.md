@@ -74,7 +74,7 @@ T30: insufficient dynamic range (noise floor -24.9 dB > required -45.0 dB = -35 
 Invalid でないこと、未校正時に絶対 SPL が invalid になること、
 Absolute 校正 (offset 94 dB) 時のみ valid になることを確認。
 
-## 3. C50 / C80 / D50 / Ts の理論値一致 (test_clarity — 19 checks PASS)
+## 3. C50 / C80 / D50 / Ts の理論値一致 (test_clarity — 31 checks PASS)
 
 解析的に計算できる 2 反射 RIR (直接音 1.0、60 ms に 0.5、100 ms に 0.4)。
 
@@ -175,7 +175,7 @@ G = 10log10(∫p²dt / ∫p₁₀²dt) は**比**なので、閉形式アンカ�
   ノイズフロア (+8 dB マージン) に埋もれた反射 (−55 dB) の非検出と
   明確な反射 (−12 dB) の検出。
 
-## 6. WAV 入出力 (test_wav — 52 checks PASS)
+## 6. WAV 入出力 (test_wav — 66 checks PASS)
 
 書き込み→読み込みラウンドトリップの最大誤差:
 
@@ -190,13 +190,32 @@ odd サイズ LIST チャンクのパディング、奇数サンプル数 (24bit
 data チャンクが奇数長)、非 WAV データ → `UnsupportedFormat`、
 存在しないファイル → `FileNotFound` を確認。
 
-## 7. C API (test_c_api — 39 checks PASS、純 C99 でコンパイル)
+## 7. C API (test_c_api — 281 checks PASS、純 C99 でコンパイル)
 
 実出力: `EDT=0.9928 T20=0.9989 T30=0.9991 C50=-0.05 C80=2.99 D50=0.497 Ts=0.0729`
 (RT=1.0 s の人工 RIR)。理論値 D50 = 1−10^(−0.3) = 0.4988 (±0.05)、
 Ts = RT/13.82 = 0.0724 s (±0.02) と一致。NULL 引数 7 系統・短入力の
 INVALID_AUDIO・struct_size/api_version 不一致の拒否・
 `ofdx_ac_last_error` の非 NULL 保証・destroy(NULL) 安全性を確認。
+
+api_version 2 (負債 #5、2026-08-16) の追加検証:
+
+- **末尾追加指標**: early/late 比は D50 と同じエネルギー分割なので恒等式
+  el50 = D50/(1−D50) で検算 (±1e-6)。ST_early/ST_late は有効性と
+  単調減衰での大小関係 (ST_late < ST_early)。
+- **バージョン 1 互換**: api_version = 1 + 旧 struct_size
+  (= `offsetof(ofdx_ac_metrics, early_late_50)`) の呼び出しが受理され、
+  v1 の 7 指標のみ書かれて追加フィールドの番兵値が不変であること。
+- **帯域別分析 (`ofdx_ac_result`)**: Compat6 = 6 帯域の中心周波数・
+  ラベル・filter_ok・INR (> 45 dB → T30 評価可)、帯域別 T30 が
+  RT=1.0 s ±0.15 (減衰白色雑音は全帯域同一 RT)。FULL_ONLY = 1 帯域で
+  広帯域 API `ofdx_ac_analyze_rir` と**同値** (同一経路の検算)。
+- **反射リスト**: 直接音 +50 ms・振幅 0.5 の離散エコーが遅延 ±2 ms で
+  検出されること (レベルの物理値は test_reflections が担当 — ここは
+  写像の契約のみ)。
+- **warning / 品質 / エラー系**: 範囲外 index・NULL・struct_size 不一致・
+  未知 band_set の拒否、warning 文字列の非 NULL 保証、
+  ofdx_ac_result_destroy(NULL) 安全性。
 
 ## 8. テストケース一覧 (何を検証したか)
 
@@ -312,16 +331,21 @@ count=0 かつ警告なし (出力は正規化されず 1.8 のまま)。
 | test_sweep | 47 | 0 |
 | test_testsignal | 41 | 0 |
 | test_vocal | 61 | 0 |
-| test_wav | 52 | 0 |
-| test_c_api | 39 | 0 |
+| test_wav | 66 | 0 |
+| test_c_api | 281 | 0 |
 | test_acoustic_runner | 45 | 0 |
-| **合計 (ctest 22 テスト)** | **1655** | **0** |
+| **合計 (ctest 23 テストのうち上表の 22 本)** | **1911** | **0** |
 
 (フェーズ1 記録時点の集計は 7 テスト 392 checks。以降のフェーズ 3/4/5 と
 負債 #7 / #8 の解消分を含めた現在値が上表。)
 
-既存 baseline (`ofdx_selftest`: 24 files loaded, 1870 checks,
-0 failures) は本コア追加の影響を受けない (コアは既存コードに
+`kernel.runner_mpi` は音響の検証ではない (GUI の Runner を MPI で実際に
+走らせる統合テスト) ので上表に含めていない。`OFDX_OFD_BIN` が無い環境では
+skip して件数を出さないが、カーネルと MPI があれば `runner mpi: 22 checks`
+を出す (2026-10-19 に ofd_mpi + MS-MPI 接続で実測)。
+
+既存 baseline (`ofdx_selftest`。現在値は `docs/opera-acoustics-baseline.md`)
+は本コア追加の影響を受けない (コアは既存コードに
 リンクされるのみで既存経路を変更しない)。
 
 **未達成項目なし** — 定義した許容基準 (残響指標 ±5%、Schroeder 傾き

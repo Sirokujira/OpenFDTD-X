@@ -22,8 +22,13 @@
 extern "C" {
 #endif
 
-/* この API のバージョン。構造体レイアウトが変わったら増やす。 */
-#define OFDX_AC_API_VERSION 1u
+/* この API のバージョン。構造体レイアウトが変わったら増やす。
+ * 履歴: 1 = 広帯域 7 指標のみ
+ *       2 = ofdx_ac_metrics に early/late・ST を末尾追加 +
+ *           帯域別結果 / 反射リスト / warning 文字列の ofdx_ac_result
+ * バージョン 1 の呼び出し側 (api_version = 1, 旧 struct_size) も
+ * 引き続き受理する (旧レイアウト分のみ書き込む)。 */
+#define OFDX_AC_API_VERSION 2u
 
 /* エラーコード */
 typedef enum ofdx_ac_error {
@@ -71,6 +76,15 @@ typedef struct ofdx_ac_metrics {
     ofdx_ac_metric c80;         /* 明瞭度 C80 [dB] */
     ofdx_ac_metric d50;         /* Definition D50 [0..1] */
     ofdx_ac_metric center_time; /* 重心時間 Ts [s] */
+    /* ── ここから api_version 2 の末尾追加 (並び替え・挿入は禁止) ── */
+    ofdx_ac_metric early_late_50; /* 早期/後期エネルギー比 (0-50ms / 50ms-) [線形比] */
+    ofdx_ac_metric early_late_80; /* 早期/後期エネルギー比 (0-80ms / 80ms-) [線形比] */
+    /* ST_early / ST_late (ISO 3382-1 Annex C の舞台支援) [dB]。
+     * 測定条件 (舞台上・音源から 1 m・空席) はデータから検証できないため、
+     * ここでは生値と品質フラグをそのまま返す (JSON 出力と同じ方針)。
+     * 利用者向け表示での 3 値規則 (要求 §3.2) の適用は呼び出し側の責任。 */
+    ofdx_ac_metric st_early;      /* ST_early [dB] (20-100ms / 0-10ms) */
+    ofdx_ac_metric st_late;       /* ST_late [dB] (100-1000ms / 0-10ms) */
 } ofdx_ac_metrics;
 
 /* 不透明な分析コンテキスト (last_error バッファ等を保持) */
@@ -95,6 +109,105 @@ ofdx_ac_error ofdx_ac_analyze_rir(ofdx_ac_context *ctx,
  * 返るポインタは ctx が破棄されるか次の API 呼び出しまで有効。
  * ctx == NULL でも静的な空文字列を返す (NULL は返さない)。 */
 const char *ofdx_ac_last_error(const ofdx_ac_context *ctx);
+
+/* ══════════════════ api_version 2: 帯域別分析 (ofdx_ac_result) ═══════════════
+ * 帯域別指標・反射リスト・warning 文字列は可変長のため、フラット構造体では
+ * なく不透明ハンドル + アクセサで公開する。ハンドルは
+ * ofdx_ac_result_destroy() で必ず破棄すること。
+ * アクセサから返る const char* はハンドルが破棄されるまで有効。 */
+
+/* 帯域セット (コア BandSet と同順。.ofdx の band_mode とは別番号) */
+typedef enum ofdx_ac_band_set {
+    OFDX_AC_BANDS_COMPAT6 = 0,        /* 1 oct {125..4k} (6 帯域) */
+    OFDX_AC_BANDS_FULL_ONLY = 1,      /* 全帯域 (フィルタなし) のみ */
+    OFDX_AC_BANDS_OCTAVE_63_8K = 2,   /* 1 oct {63..8k} (8 帯域) */
+    OFDX_AC_BANDS_THIRD_100_5K = 3,   /* 1/3 oct {100..5k} (18 帯域) */
+    OFDX_AC_BANDS_SINGER_FORMANT = 4  /* 歌手フォルマント帯域 (4 帯域) */
+} ofdx_ac_band_set;
+
+/* 分析設定。NULL を渡すと既定 (band_set = OFDX_AC_BANDS_COMPAT6)。
+ * 将来の設定追加も末尾フィールド追加 + struct_size で行う。 */
+typedef struct ofdx_ac_analysis_config {
+    size_t struct_size; /* [in] sizeof(ofdx_ac_analysis_config) を設定 */
+    int band_set;       /* [in] ofdx_ac_band_set の値 */
+} ofdx_ac_analysis_config;
+
+/* 帯域の情報。struct_size は呼び出し側が設定する ([in])。 */
+typedef struct ofdx_ac_band_info {
+    size_t struct_size;    /* [in] sizeof(ofdx_ac_band_info) を設定 */
+    double center_hz;      /* 中心周波数 (幾何平均)。全帯域は 0 */
+    double low_hz;         /* 下側エッジ [Hz]。全帯域は 0 */
+    double high_hz;        /* 上側エッジ [Hz]。全帯域は 0 */
+    int is_full_band;      /* 非 0 = 全帯域 (フィルタなし) */
+    int filter_ok;         /* 非 0 = 帯域フィルタ設計に成功 */
+    int noise_ok;          /* 非 0 = 帯域内動的範囲 (INR) を推定できた */
+    double peak_db;        /* 帯域信号のピーク [dBFS] */
+    double noise_floor_db; /* 帯域信号の末尾区間ノイズフロア [dBFS] */
+    double inr_db;         /* impulse-to-noise ratio = peak - noise [dB] */
+} ofdx_ac_band_info;
+
+/* 反射音イベント。struct_size は呼び出し側が設定する ([in])。 */
+typedef struct ofdx_ac_reflection {
+    size_t struct_size;         /* [in] sizeof(ofdx_ac_reflection) を設定 */
+    double arrival_time_s;      /* 信号先頭を 0 とした到達時刻 [s] */
+    double delay_from_direct_s; /* 直接音からの遅延 [s] */
+    double relative_level_db;   /* 直接音比レベル [dB] */
+    double energy;              /* ピーク近傍のエネルギー (x² の和) */
+    double confidence;          /* 0..1 (ノイズフロアからの突出量) */
+    int band_index;             /* 帯域番号 (-1 = 広帯域) */
+} ofdx_ac_reflection;
+
+/* 不透明な分析結果ハンドル */
+typedef struct ofdx_ac_result ofdx_ac_result;
+
+/* RIR を帯域別に分析し、結果ハンドルを *out_result に返す。
+ * config は NULL で既定。成功時は必ず ofdx_ac_result_destroy() で破棄する。
+ * 失敗時は *out_result = NULL、詳細は ofdx_ac_last_error(ctx)。 */
+ofdx_ac_error ofdx_ac_analyze_rir_full(ofdx_ac_context *ctx,
+                                       const ofdx_ac_audio_view *audio,
+                                       const ofdx_ac_analysis_config *config,
+                                       ofdx_ac_result **out_result);
+
+/* 結果ハンドルの破棄。NULL は無視する。 */
+void ofdx_ac_result_destroy(ofdx_ac_result *result);
+
+/* 帯域数 (result == NULL なら 0) */
+size_t ofdx_ac_result_band_count(const ofdx_ac_result *result);
+
+/* index 番目の帯域情報を out へ書く。呼び出し前に out->struct_size を
+ * 設定すること。範囲外 / NULL / struct_size 不一致は INVALID_ARGUMENT。 */
+ofdx_ac_error ofdx_ac_result_band_info(const ofdx_ac_result *result,
+                                       size_t index,
+                                       ofdx_ac_band_info *out_info);
+
+/* index 番目の帯域ラベル (UTF-8, 例 "125", "full")。
+ * 範囲外 / NULL は空文字列 (NULL は返さない)。 */
+const char *ofdx_ac_result_band_label(const ofdx_ac_result *result,
+                                      size_t index);
+
+/* index 番目の帯域の指標を out へ書く。ofdx_ac_analyze_rir と同じ
+ * struct_size / api_version 規約 (バージョン 1 レイアウトも受理)。 */
+ofdx_ac_error ofdx_ac_result_band_metrics(const ofdx_ac_result *result,
+                                          size_t index,
+                                          ofdx_ac_metrics *out_metrics);
+
+/* 反射音イベント数 (result == NULL なら 0)。広帯域信号からの検出。 */
+size_t ofdx_ac_result_reflection_count(const ofdx_ac_result *result);
+
+/* index 番目の反射音イベントを out へ書く。規約は band_info と同じ。 */
+ofdx_ac_error ofdx_ac_result_reflection(const ofdx_ac_result *result,
+                                        size_t index,
+                                        ofdx_ac_reflection *out_reflection);
+
+/* 分析 warning の件数 (result == NULL なら 0) */
+size_t ofdx_ac_result_warning_count(const ofdx_ac_result *result);
+
+/* index 番目の warning 文字列 (UTF-8)。範囲外 / NULL は空文字列。 */
+const char *ofdx_ac_result_warning(const ofdx_ac_result *result,
+                                   size_t index);
+
+/* 分析全体の品質 (ofdx_ac_quality の値。result == NULL なら INVALID) */
+int ofdx_ac_result_overall_quality(const ofdx_ac_result *result);
 
 #ifdef __cplusplus
 } /* extern "C" */

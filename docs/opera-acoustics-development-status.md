@@ -34,8 +34,10 @@
    (`ofdxMergeExtra`) の後に決めるので他ツールが足した分も反映される。
    読み手は従来どおり版で分岐せずキーの有無で判定する
    (`docs/opera-acoustics-file-format.md` §1)。selftest `ofdx-schema`
-   +8 checks (旧 1.0 ファイルを読んで書き戻すと 1.1 へ上がること、
-   同じ中身なら版が違っても読み取り結果が同一であること)。
+   +13 checks (旧 1.0 ファイルを読んで書き戻すと 1.1 へ上がること、
+   同じ中身なら版が違っても読み取り結果が同一であること、版の更新で
+   他ツールの未知キーを失わないこと、未知の将来版 "9.9" でも読み込みが
+   成功してキーの中身が読めること)。
 6. ~~**calibration_offset_db の追加** (負債 #1)~~ → **完了**
    (`OperaAcousticSettings::calibrationOffsetDb` / `.ofdx`
    `calibration_offset_db` / `RirAnalysisTab` の入力欄 /
@@ -46,11 +48,11 @@
 | # | 内容 | 影響 | 対応方針 |
 |---|---|---|---|
 | 1 | ~~`calibrationOffsetDb` が `OperaAcousticSettings` / `.ofdx` / `QtAcousticAdapter::toAnalyzerConfig` に無い~~ **解消済み** | (解消前: GUI 経由で Absolute を選んでもオフセット 0 dB で絶対 SPL が dBFS のままだった) | **完了**: `OperaAcousticSettings::calibrationOffsetDb` (既定 0.0) + `.ofdx` `calibration_offset_db` (欠落時 0.0) + `RirAnalysisTab` の入力欄 (Absolute 時のみ有効) + `QtAcousticAdapter::toAnalyzerConfig` / `toVocalConfig` で **Absolute 以外は 0 を渡す**ゲート。selftest に往復 / 旧ファイル既定 / ゲート規則のチェックを追加 |
-| 2 | ~~save が `schemaVersion: "1.0"` を書く~~ **解消済み (2026-08-23)** | (解消前: 1.1 ファイルの識別ができない。実害は小で、読み込みは元よりキー有無判定) | **完了**: `OfdxIO::serialize` が出力の中身から版を決める (`acoustic.opera_analysis` があれば "1.1")。固定値にせず実際に書いた内容から決めるので、将来 opera_analysis を出さない構成になっても版が嘘にならない。読み手は従来どおり版で分岐しない。selftest `ofdx-schema` +8 checks |
+| 2 | ~~save が `schemaVersion: "1.0"` を書く~~ **解消済み (2026-08-23)** | (解消前: 1.1 ファイルの識別ができない。実害は小で、読み込みは元よりキー有無判定) | **完了**: `OfdxIO::serialize` が出力の中身から版を決める (`acoustic.opera_analysis` があれば "1.1")。固定値にせず実際に書いた内容から決めるので、将来 opera_analysis を出さない構成になっても版が嘘にならない。読み手は従来どおり版で分岐しない。selftest `ofdx-schema` +13 checks (版の更新で未知キーを失わないこと、未知の将来版 "9.9" でも読めることを追加) |
 | 3 | ~~selftest に `opera_analysis` ラウンドトリップ未追加~~ **解消済み (2026-08-15)** | (解消前: 永続化の回帰をテストが検出しない) | **完了**: 実際には往復テスト (`testOperaAcousticSettings` §2) は既に存在しており、この記述は古かった。ただし**全 25 フィールド中 20 しか設定しておらず**、後から追加された ESS 掃引逆畳み込みの 5 フィールド (`sweepDeconvolve`/`sweepStartHz`/`sweepEndHz`/`sweepSec`/`sweepHarmonics`) が往復・旧ファイル既定値の両方から漏れていた (シリアライズ実装自体は正しかったことを確認)。構造体と代入群の突き合わせで検出し、往復 (+3 checks) と旧ファイル既定値 (+1 check) を追加して全 25 フィールドを網羅した |
 | 4 | ~~`.ofdx` の未知キーが保存時に消える (既知フィールド再構成方式)~~ **解消済み (2026-08-15)** | (解消前: 他ツールとの .ofdx 共有で相手のキーを失った) | **完了**: ADR-0003 案B を実装。ロード時に「ファイル − 再シリアライズ結果」の差分を `Project::ofdxExtra()` に保持し、save がマージして書き戻す。既知キーは常に新しい値が勝つ (差分方式なので stale 復活なし)。未知キーの無いファイルでは出力バイト不変。selftest 13 checks (往復逐語保全 / fresh 優先 / バイト不変 / 繰り返し安定)。詳細は ADR-0003 の Update 節 |
-| 5 | C API が広帯域 7 指標のみ (帯域別結果・反射リスト・warning 文字列・Early/Late は未公開) | 外部カーネルからの利用範囲が限定的 | 需要が出た時点で `struct_size`/`api_version` 拡張規約に従い追加 |
-| 6 | `QtAcousticAdapter::readWav` がファイル全体を QByteArray に読む | 巨大 WAV (長時間・高 fs) でメモリピーク | ストリーミング読みは必要になるまで保留 |
+| 5 | ~~C API が広帯域 7 指標のみ (帯域別結果・反射リスト・warning 文字列・Early/Late は未公開)~~ **解消済み (2026-08-16)** | (解消前: 外部カーネルからの利用範囲が限定的だった) | **完了**: `api_version` を 2 に上げた。(a) `ofdx_ac_metrics` へ early_late_50/80・st_early/st_late を**末尾追加** — バージョン 1 呼び出し側 (api_version=1 + 旧 struct_size = `offsetof(ofdx_ac_metrics, early_late_50)`) は引き続き受理し、旧レイアウト分のみ書く。(b) 可変長データ (帯域別指標・反射リスト・warning 文字列) は不透明ハンドル `ofdx_ac_result` + アクセサ関数で公開 — `ofdx_ac_analyze_rir_full` (config NULL = Compat6、band_set 5 種) / `band_count`・`band_info` (中心周波数・エッジ・filter_ok・INR)・`band_label`・`band_metrics` / `reflection_count`・`reflection` / `warning_count`・`warning` / `overall_quality` / `result_destroy`。out 構造体はすべて struct_size 検査つき (今後も末尾追加のみ)。ST は測定条件をデータから検証できないため生値+品質を返し (JSON と同じ方針)、3 値表示規則の適用は呼び出し側の責任とヘッダに明記。`test_c_api` 39 → 281 checks (v1 互換の番兵不変 / el50=D50/(1−D50) 恒等式 / FULL_ONLY と広帯域 API の同値 / 帯域別 T30 ±0.15 / エコー検出 / エラー系) — 純 C99 コンパイルのまま |
+| 6 | ~~`QtAcousticAdapter::readWav` がファイル全体を QByteArray に読む~~ **解消済み (2026-08-16)** | (解消前: 巨大 WAV (長時間・高 fs) でファイル全体の複製分メモリピークが増えた) | **完了**: `WavReader` に逐次読みの供給源抽象 `WavByteSource` (read/seek/size, C++14・Qt 非依存) を導入し、パーサを 2 パス (チャンクヘッダ走査 → data チャンクへ戻って 64 KiB ブロック単位デコード) の `readWavFromSource()` に一本化。`readWavFromMemory` / `readWavFile` / `QtAcousticAdapter::readWav` (QFile 供給源 — 非 ASCII パス対応は従来どおり) の 3 経路すべてが同じパーサを通るので挙動差は構造的に生じない。メモリピークはデコード結果 (double 配列) + 64 KiB。デコード式は不変で、`test_wav` +14 checks (ファイル/メモリ経路のビット一致 / data チャンクが fmt より前でも読める / 切り詰めファイルの FileReadError) |
 | 7 | ~~帯域フィルタの数値精度検証が fs=48 kHz のみ (低い fc/fs 比 — 例 63 Hz @ 96 kHz — の IIR 係数精度が未検証)~~ **解消済み** | (解消前: 高 fs 入力の低帯域で精度低下の可能性が未評価だった) | **完了**: `tests/acoustics/test_bandfilter.cpp` (563 checks) を追加。48/96 kHz の 63・125・250 Hz オクターブ帯と 100 Hz 1/3 オクターブ帯について、設計された離散フィルタの**厳密な期待振幅特性** (プリワープ後のバターワース解析解) と正弦波応答を直接比較。**精度低下は無かった** — 解析解との相対誤差は最悪 3.7e-6 (63 Hz @ 96 kHz, fc/fs = 6.6e-4)、48 kHz でも 96 kHz でも通過帯域利得 1.000000±4e-6 / エッジ −3.0103 dB / ±1 oct −13.274 dB / ±2 oct −28.99 dB。インパルス応答の末尾減衰 (≤1e-21·peak) と DC 漏れ (≤1e-13) で係数の悪条件も否定 |
 | 8 | ~~クリッピング検出の陽性系ユニットテストが無い (統合テストの陰性確認のみ)~~ **解消済み** | (解消前: 検出ロジック回帰の検出漏れ) | **完了**: `tests/acoustics/test_clipping.cpp` (60 checks) を追加。`RirAnalyzer` (連続区間検出) と `ConvolutionEngine` (サンプル数カウント) の**両方**について陽性系を検証。境界値は実装仕様に合わせる — 判定は**厳密な `>`** なので閾値ちょうど (0.999) は非検出、1 ulp 上と 1.0 は検出。連続数が `clipRunLength` (既定 3) 未満は非検出、`clippedRunCount` は区間数 (サンプル数ではない)、判定は DC 除去の**前**に生サンプルで行う |
 | 9 | ~~MiniPlot に対話機能 (ズーム/カーソル) が無い (フェーズ0 調査 §2.3)~~ **解消済み (2026-08-15)** | (解消前: 減衰カーブの詳細確認がしづらい) | **完了**: ホバーで最寄り点へスナップして値を読み出し (24px 以内。遠いときはカーソル座標)、ラバーバンドドラッグで x/y 拡大、ダブルクリックで全体表示。拡大中は "zoom" 表示 + 系列をプロット枠でクリップ。`setSeries` で拡大は解除 (データが変わったのに古い視野を残すと空の図を黙って見せるため)。写像は `computeView()` に集約し描画とマウス処理で共有 (2 か所で別々に計算するとずれる)。外部ライブラリなし (QPainter のみ)、全 MiniPlot 利用タブ (減衰カーブ / RT60 / NC / エコーグラム / 分散曲線 …) に自動で効く |
@@ -87,9 +89,10 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
 その旨) を出し、指標表の直下に ST・STI・G の測定前提の注記を添える):
 `src/acoustics/qt/AcousticReportBuilder` (Widget 非依存) が実行済みの RIR 分析 + 歌声分析を一括 HTML (自己完結・外部参照なし) / CSV (`source` 列で系統を区別) にまとめる。入口はファイルメニュー「音響レポート出力…」(`MainWindow::exportAcousticReport`)。分析は再実行せず、未実行の系統は**「未実行」と明示** (絶対規則 5)。出力は現在時刻を含まず決定的 (同一入力 → 同一バイト列) で、selftest 19 checks (未実行明示 / 決定性 / HTML エスケープ / 校正オフセットの Absolute 限定) で検証。残り (ST 系 / G / 実測 STI / 校正ワークフロー) は別課題として継続 (要求 §3.2 / §4.3、仮定 §1/§2) |
 | 11 | 可聴化のリアルタイム再生が無い (A/B はドライ/ウェット WAV 書き出しのみ) | 切替比較に外部プレイヤーが必要 | Partitioned Convolution + 音声出力を将来課題として記録 (ADR-0005) |
-| 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。**2026-08-06 追補**: 1 段の上限 (L, M ≤ 4096) を超える比 (FDTD の格子刻み由来の端数 fs — 例 1201 Hz → 48000 Hz = 48000/1201) を多段カスケードで実現し、分割できない比 (fs が大きな素数) は 1 段で押し切る (max(L,M) ≤ 65536)。それも超える比だけをエラーにし、メッセージに実際の fs を入れる。他の fs 不一致箇所 (AudioEditEngine 等) への展開は別課題 |
+| 12 | ~~リサンプリング未実装 (ドライと RIR の fs 不一致は明示エラー)~~ **解消済み** | (解消前: fs の異なる素材は外部ツールで変換が必要だった) | **完了**: `src/acoustics/core/Resampler` (C++14, Qt 非依存) — 有理比 L/M のポリフェーズ Kaiser 窓 sinc (阻止域 ~90 dB 設計、群遅延補正で時間原点を保持、決定的)。`QtAcousticAdapter::convolveFiles` が fs 不一致時に **RIR をドライ側 fs へ**変換して続行し、変換の事実を UI (可聴化タブ / 音響タブ) に必ず明示する (黙って変換しない。ドライ音源は変換しない)。selftest 47 checks (恒等ビット一致 / 44.1k↔48k 正弦波の振幅 <0.1 dB と位相 / 折り返し抑圧 ≤−85 dB / 出力長 round(N·L/M)±1 / インパルスのピーク位置 / 決定性 / convolveFiles 配線)。仮定 §21 参照。**2026-08-06 追補**: 1 段の上限 (L, M ≤ 4096) を超える比 (FDTD の格子刻み由来の端数 fs — 例 1201 Hz → 48000 Hz = 48000/1201) を多段カスケードで実現し、分割できない比 (fs が大きな素数) は 1 段で押し切る (max(L,M) ≤ 65536)。それも超える比だけをエラーにし、メッセージに実際の fs を入れる。**2026-10-18 追補**: 他の fs 不一致箇所への展開も確認した — 音響編集の連結 (`AudioEditEngine::crossfadeConcat`) とハイブリッド RIR (`HybridRir`) は既に同じ Resampler で変換していた。ただし連結は**変換できない比 (例: 96001 Hz → 48000 Hz、65537 Hz → 48000 Hz — 整数 fs の実 WAV でも起こる) で b を a の fs のまま黙って並べていた** (音程・速度がずれた波形を成功として返す)。失敗時は結合せず a を変更せずに返し、理由を error で返すよう修正し、編集タブの「連結」はバッファを差し替えずに理由をステータスへ出す (「SRC 変換」ボタンと同じ扱い)。selftest +6 checks (変換可能な比で error が空・前回理由を持ち越さない / 変換不能な比で error が fs を名指しし a をビット不変で返す / error を受け取らない呼び出しでも結合しない) |
 | 13 | ~~実音響ソルバーが存在しない (CI はモックのみ)~~ **ExternalFDTD / ExternalGeometric とも解消済み** (FDTD 2026-08-05 / 幾何音響 2026-08-06) | — | **ExternalFDTD の実ソルバーを [Sirokujira/OpenAcoustics](https://github.com/Sirokujira/OpenAcoustics) (`ofdx_acoustic_fdtd`) として実装** (ADR-0007 契約準拠、C11、3D スタガード格子線形音響 FDTD、吸音率→インピーダンス境界、受音点ごとの `rir.wav`/`rir_<名前>.wav` 出力 = 一括可聴化の自動割当と噛み合う)。検証は解析解 (閉箱軸モード ±3%・管端反射 R=√(1−α) ±3%・直接音到達・剛壁エネルギー保存・Sabine 式) + 決定性 + 契約。同リポジトリ CI (3 OS + sanitize) green。GUI からはカーネルパス設定か `$OFDX_ACOUSTIC_SOLVER` でバイナリを指定する。本リポジトリの CI モック統合テストは契約の番人としてそのまま維持 (ADR-0007 §5)。GUI 入口は従来どおり `AcousticSolverTab` + `AcousticRunner` |
 | 14 | ~~フォルマント周波数推定 (F1/F2) が無い~~ **フォルマント推定は解消済み** (声区 (レジスター) 分析は将来課題) | (解消前: 歌手フォルマントは帯域エネルギー比のみで声楽的フィードバックの分解能が限定的だった) | **完了 (フォルマント)**: `src/acoustics/core/FormantEstimator` (LPC — 反エイリアス FIR + 1/5 間引きで内部 fs 9.6 kHz、p = 2 + round(fs/1000) = 12、プリエンファシス 0.97 + ハミング窓、Levinson-Durbin、Durand-Kerner 根 (決定的初期値・乱数不使用))。YIN の有声判定フレームのみ推定し、F ≥ 90 Hz・帯域幅 ≤ 400 Hz の極を昇順に F1/F2/F3、代表値は有効フレームの時間中央値 (MetricValue)。`VocalAnalysisTab` に F1/F2/F3 中央値 + 軌跡 MiniPlot、CSV/JSON 出力に追加。検証は `tests/acoustics/test_formant.cpp` (合成母音 ±10% — `docs/opera-acoustics-validation.md` §12)。診断的結論の禁止 (ADR-0006) は維持 — 共鳴周波数という物理量のみを報告する。**声区分析は引き続き将来課題** |
+| 15 | ~~歌声分析が GUI スレッドで同期実行される (`.claude/rules/gui.md` の既知負債 — 本表には未記載だった)~~ **解消済み (2026-10-19)** | (解消前: 分析中は画面全体が固まった。Release ビルドの実測で ~33 ms / 音声 1 秒 = 60 秒の歌唱で約 2 秒、3 分のアリアで約 6 秒。gui.md の「~2 秒 / 10 秒」は古い値だった) | **完了**: `VocalAnalysisTab::runAnalysis` を `QThread` で非同期化。入力 (`OperaAcousticSettings`) は値で捕捉してワーカーへ渡し、実行中はボタン無効化 + 「分析中… (ファイル名)」を表示、再入は無視、ワーカー内の例外は受けて内部エラーとして表示する。完了時は **分析が読む設定だけ** (voicePath / channelMode / voiceType / F0 範囲 / 校正状態 / 実際に適用される校正オフセット) を `QtAcousticAdapter::vocalInputsEqual` で比べ、実行中に変わっていたら結果を表示せず破棄して理由を出す — `Project::changed` は他タブの編集でも飛ぶので「何か変わったら破棄」にはしていない。selftest `vocal-async` +16 checks (分析が読む 7 設定の変化を必ず検出 / 読まない設定と非 Absolute 時の未使用オフセットは無視 / 「同じ」と判定した 2 設定で実 WAV の分析結果がビット一致)。実タブを offscreen で駆動する使い捨てハーネスでも確認: 60 秒の WAV で click が 0 ms で戻り (変更前は 2,082 ms 戻らなかった)、実行中に声種を変えると破棄・RIR パスを変えても結果は残る。実測 RIR 分析 (`RirAnalysisTab`) は 2.5 秒 RIR の 1/3 oct で 0.37 s と短いので同期のまま |
 
 ## 4. 品質基準の現在値
 
@@ -127,12 +130,24 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   で +27 (**11338**)、GUI の Runner を MPI で実際に走らせる統合テスト
   (ctest `kernel.runner_mpi`、22 checks) を追加、schemaVersion "1.1" の
   書き出し (負債 #2) で +8。
-  **現在値: `ofdx_selftest` = 24 files loaded, 11,455 checks, 0 failures /
-  `ctest` = 23 テスト, 0 failures** (2026-08-23、`USE_HDF5=ON` +
+  **2026-08-23 の値: `ofdx_selftest` = 24 files loaded, 11,455 checks,
+  0 failures / `ctest` = 23 テスト, 0 failures** (`USE_HDF5=ON` +
   実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
   `USE_HDF5=OFF` の既定ビルドでは 11,258)。
-- 音響コア: `ctest` の `acoustics.*` **15 テスト / 合計 1292 checks,
-  0 failures** (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
+  **現在値 (2026-10-19 実測、`USE_HDF5=ON` / カーネル無し):
+  `ofdx_selftest` = 24 files loaded, 11,407 checks, 0 failures /
+  `ctest` = 23 テスト 0 failures (checks 合計 1,911)**。
+  内訳の変化は負債 #5 (C API api_version 2) の `test_c_api` +242 (281 checks)、
+  負債 #6 (WAV ストリーミング読み) の `test_wav` +14 (66 checks)、
+  `ofdx-schema` への追加 +5 (13 checks — 版の更新で未知キーを失わないこと /
+  未知の将来版も読めること)、音響編集の連結が変換できない fs 比で黙って
+  誤速度に結合しないこと (負債 #12 の取りこぼし) +6、歌声分析の非同期化
+  (負債 #15) の `vocal-async` +16、可変音響の一括解析 (`var-acoustics`、
+  Sabine の閉形式と面積不足・S 超過の判定) +18。
+- 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1,900 checks,
+  0 failures** (2026-10-18 実測。残り 2 本は `roomac.fitzroy` 11 checks と
+  `kernel.runner_mpi`。従来の「15 テスト / 1292」はテスト追加を反映して
+  いない古い集計だった) (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
   `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の
   `test_formant` 72 checks を含む)。
 - CI: Linux job に `ctest --test-dir build --output-on-failure`、
@@ -1203,8 +1218,9 @@ Windows (Qt 6.8.3 msvc2022_64, Ninja) でのビルド・テストが初めて通
    (負債 #13)、声区分析 (負債 #14 の残り — フォルマント推定は解消済み)、
    旧フェーズ4 計画分 (負債 #10 の残り — レポート出力は解消済み、
    ST 系 / G / 実測 STI / 校正ワークフローが継続)。リサンプリング
-   (負債 #12) は解消済み (可聴化経路のみ — AudioEditEngine 等への展開は
-   別課題)。
+   (負債 #12) は解消済み (可聴化に加え、音響編集の連結・ハイブリッド RIR も
+   同じ Resampler で変換済み。2026-10-18 に連結の「変換できない比で黙って
+   誤速度に結合する」取りこぼしを修正)。
 
 ### 光タブ: S パラメータの Touchstone / CSV 出力を配線 (2026-08-09)
 

@@ -86,11 +86,14 @@ AudioBuffer repeatRange(const AudioBuffer &in, std::size_t a, std::size_t z,
                         int count);
 // 2 バッファを等パワー (sin/cos) クロスフェードで結合する。
 // 重なりは min(round(overlapSec·fs), 両者の長さ)、出力長 = Na + Nb − 重なり。
-// fs が異なる場合は b を a の fs へリサンプルしてから結合する
-// (変換不能な fs の場合のみ b のサンプルをそのまま用いる)。
+// fs が異なる場合は b を a の fs へリサンプルしてから結合する。
+// 変換できない fs 比 (例: 96001 Hz → 48000 Hz は 1 段の上限 65536 を超え、
+// 素因数分解もできない) のときは**結合しない** — b を a の fs のまま
+// 並べると音程と速度が黙ってずれるため。その場合は a を変更せず返し、
+// error に理由を入れる (呼び出し側は error で判定する)。
 // チャンネル数が異なる場合は多い方に合わせ、モノは複製する
 AudioBuffer crossfadeConcat(const AudioBuffer &a, const AudioBuffer &b,
-                            double overlapSec);
+                            double overlapSec, std::string *error = nullptr);
 
 // ── サンプルレート変換 (音響コアのポリフェーズ Kaiser sinc へ委譲) ──────────
 // acoustics::resampleBuffer (阻止域 ~90 dB、群遅延補正済み、全 ch 同一設計)

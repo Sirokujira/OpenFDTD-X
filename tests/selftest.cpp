@@ -2203,6 +2203,41 @@ static void testOperaAcousticSettings()
                       "schema: 版が違っても中身が同じなら結果は同一 "
                       "(読み手は版で分岐しない)");
             }
+
+            // 1.0 → 1.1 の書き戻しでも、他ツールが書いた未知キーは
+            // 逐語で残る (版の更新が ofdxExtra 差分を壊さないこと)
+            QTemporaryFile extra;
+            extra.setFileTemplate(QDir::tempPath() + "/ofdx_schema_x_XXXXXX.ofdx");
+            if (extra.open()) {
+                extra.write("{ \"schemaVersion\": \"1.0\","
+                            "  \"domain\": \"acoustic\", \"future_key\": 42 }");
+                extra.flush();
+                Project s;
+                check(OfdxIO::load(extra.fileName(), s),
+                      "schema: 未知キーつき 1.0 ファイルを読める");
+                const QByteArray re = OfdxIO::serialize(s);
+                check(re.contains("\"schemaVersion\": \"1.1\""),
+                      "schema: 未知キーがあっても 1.1 へ上がる");
+                check(QJsonDocument::fromJson(re).object()
+                          .value("future_key").toInt() == 42,
+                      "schema: 版の更新で未知キーを失わない");
+            }
+        }
+
+        // 未知の将来バージョンも「読める範囲で読む」(版で分岐しないことの
+        // 裏返し — 知らない版を拒否しないこと)
+        QTemporaryFile future;
+        future.setFileTemplate(QDir::tempPath() + "/ofdx_schema_f_XXXXXX.ofdx");
+        if (future.open()) {
+            future.write("{ \"schemaVersion\": \"9.9\", \"domain\": \"acoustic\","
+                         "  \"acoustic\": { \"opera_analysis\": {"
+                         "      \"enabled\": true, \"band_mode\": 1 } } }");
+            future.flush();
+            Project t;
+            check(OfdxIO::load(future.fileName(), t),
+                  "schema: 未知の将来版でも読み込みは成功する");
+            check(t.operaAcoustic().enabled && t.operaAcoustic().bandMode == 1,
+                  "schema: 未知の将来版でもキーの中身は読める");
         }
     }
 }
@@ -3511,6 +3546,39 @@ static void testAudioEditEngine()
         // 4800 + round(4410·160/147) − 480 = 9120
         check(std::llabs((long long)cc.sampleCount() - 9120) <= 1,
               "crossfade length after resampling");
+        // 変換できる fs 比なら error は空 (呼び出し側の失敗判定が誤爆しない)。
+        // 事前に入っていた文字列も消す (前回の失敗理由を持ち越さない)
+        {
+            std::string err = "stale";
+            const AudioBuffer ok = crossfadeConcat(a48, b441, 0.01, &err);
+            check(err.empty(), "crossfade convertible fs leaves error empty");
+            check(ok.sampleCount() == cc.sampleCount(),
+                  "crossfade with error arg gives the same result");
+        }
+        // 変換できない fs 比 (96001 Hz → 48000 Hz: 比 48000/96001 は素因数に
+        // 分けられず 1 段の上限 65536 を超える) では**結合しない**。b を
+        // a の fs のまま並べると音程・速度が黙ってずれる (約 2 倍速)。
+        // 整数 fs の実 WAV でも起こる比なので、非整数 fs だけの話ではない
+        {
+            const AudioBuffer b96001 =
+                generateSignal(SignalKind::Sine, 1000, 0, 0.1, 0.5, 96001.0);
+            std::string err;
+            const AudioBuffer bad = crossfadeConcat(a48, b96001, 0.01, &err);
+            check(!err.empty(), "crossfade unconvertible fs reports error");
+            check(err.find("96001") != std::string::npos,
+                  "crossfade error names the offending fs");
+            bool same = bad.sampleRateHz == a48.sampleRateHz &&
+                        bad.channelCount() == a48.channelCount() &&
+                        bad.sampleCount() == a48.sampleCount();
+            for (std::size_t c = 0; same && c < a48.channelCount(); ++c)
+                same = bad.channels[c] == a48.channels[c];
+            check(same, "crossfade unconvertible fs returns a bit-identical "
+                        "(no wrong-speed append)");
+            // error を受け取らない呼び出しでも誤速度の結合はしない
+            const AudioBuffer bad2 = crossfadeConcat(a48, b96001, 0.01);
+            check(bad2.sampleCount() == a48.sampleCount(),
+                  "crossfade unconvertible fs without error arg still refuses");
+        }
         // チャンネル数不一致は多い方に合わせ、モノは複製する
         AudioBuffer st2;
         st2.sampleRateHz = 1000.0;
@@ -4151,6 +4219,94 @@ static void testAudioEditEngine()
 // QtAcousticAdapter は calibrationState==Absolute のときだけオフセットを
 // 分析コアへ渡す。Relative / Uncalibrated では 0 (未校正なのに SPL が
 // ずれるのを防ぐ — CLAUDE.md 絶対規則 6)。RIR / 歌声の両経路で同じ規則。
+// 歌声分析の非同期化 (VocalAnalysisTab) — 完了時に「実行中に入力が
+// 変わったか」を判定する QtAcousticAdapter::vocalInputsEqual の検査。
+// 分析が読む設定の変化は必ず検出し (偽の「同じ」は古い結果を今の設定の
+// 結果として見せる)、読まない設定の変化では結果を捨てない (他タブの編集で
+// 毎回破棄されると非同期化が台無し)。後者は実ファイルの分析結果が実際に
+// 一致することまで確かめる。
+static void testVocalInputsEqual()
+{
+    g_file = "vocal-async";
+    using acoustics::AudioBuffer;
+    using audioedit::SignalKind;
+
+    OperaAcousticSettings base;
+    base.voicePath = "/tmp/aria.wav";
+    base.calibrationState = 0;           // Absolute (オフセットが効く)
+    base.calibrationOffsetDb = 94.0;
+    check(QtAcousticAdapter::vocalInputsEqual(base, base),
+          "vocal-eq: reflexive");
+
+    // 分析が読む設定 — どれが変わっても「違う」
+    {
+        OperaAcousticSettings t = base; t.voicePath = "/tmp/other.wav";
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: voicePath");
+        t = base; t.channelMode = 0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: channelMode");
+        t = base; t.voiceType = 3;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: voiceType");
+        t = base; t.vocalF0MinHz = 120.0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: f0 min");
+        t = base; t.vocalF0MaxHz = 900.0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: f0 max");
+        t = base; t.calibrationState = 2;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: calibration state");
+        t = base; t.calibrationOffsetDb = 90.0;   // Absolute なので効く
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: offset matters when Absolute");
+    }
+    // 分析が読まない設定 — 変わっても「同じ」(結果を捨てない)
+    {
+        OperaAcousticSettings t = base;
+        t.rirPath = "/tmp/hall.wav";
+        t.bandMode = 3;
+        t.directSoundMethod = 0;
+        t.noiseCorrection = !base.noiseCorrection;
+        t.stConditionDeclared = true;
+        t.auralizationDryFile = "/tmp/dry.wav";
+        t.solverThreads = 16;
+        check(QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: unrelated (RIR / auralization / solver) edits ignored");
+        // Relative / Uncalibrated ではオフセットは分析に渡らない (0 に落ちる)
+        OperaAcousticSettings r1 = base, r2 = base;
+        r1.calibrationState = r2.calibrationState = 1;
+        r2.calibrationOffsetDb = 10.0;
+        check(QtAcousticAdapter::vocalInputsEqual(r1, r2),
+              "vocal-eq: unused offset ignored when not Absolute");
+    }
+
+    // 「同じ」と判定した 2 つの設定で、実ファイルの分析結果が実際に一致する
+    QTemporaryDir dir;
+    check(dir.isValid(), "vocal-eq: temp dir");
+    if (!dir.isValid()) return;
+    const QString wav = dir.filePath("voice.wav");
+    const AudioBuffer v =
+        audioedit::generateSignal(SignalKind::Sine, 220.0, 0, 1.0, 0.3, 48000.0);
+    check(acoustics::writeWavFile(wav.toStdString(), v).success(),
+          "vocal-eq: voice written");
+    OperaAcousticSettings a = base;
+    a.voicePath = wav;
+    OperaAcousticSettings b = a;
+    b.rirPath = "/tmp/hall.wav";
+    b.bandMode = 2;
+    check(QtAcousticAdapter::vocalInputsEqual(a, b), "vocal-eq: pair is equal");
+    const auto ra = QtAcousticAdapter::analyzeVocalFile(a.voicePath, a);
+    const auto rb = QtAcousticAdapter::analyzeVocalFile(b.voicePath, b);
+    check(ra.success() && rb.success(), "vocal-eq: both analyses succeed");
+    if (ra.success() && rb.success()) {
+        const acoustics::VocalAnalysisResult &x = ra.value(), &y = rb.value();
+        check(x.voicedFrameCount == y.voicedFrameCount
+                  && x.f0MedianHz.valid == y.f0MedianHz.valid
+                  && x.f0MedianHz.value == y.f0MedianHz.value
+                  && x.hnrDb.value == y.hnrDb.value,
+              "vocal-eq: equal inputs give bit-identical results");
+        check(x.f0MedianHz.valid && std::fabs(x.f0MedianHz.value - 220.0) < 2.0,
+              "vocal-eq: analysis really ran (F0 median ~220 Hz)");
+    }
+}
+
 static void testCalibrationOffsetGate()
 {
     g_file = "calib-offset";
@@ -11064,6 +11220,149 @@ static void testNotchCandidates()
           && notchCandidates(L, W, H, c, 0.0, 0).empty()
           && notchCandidates(L, W, H, 0.0, T, 0).empty(),
           "notch: non-positive inputs yield no candidates");
+}
+
+// 可変音響 (反射板・吸音バナー・ピット蓋・電子残響) — RoomAcousticsTab の
+// 「各構成で一括解析」の計算部。期待値は Sabine の閉形式 RT = 0.161·V/A を
+// テスト側で独立に組み立てて比べる (実装の吸音力を読み返さない)。
+static void testVariableAcoustics()
+{
+    using namespace roomac;
+    g_file = "var-acoustics";
+    const double V = 10000.0;
+    auto sab = [V](double A) { return 0.161 * V / A; };
+    auto close = [](double x, double y) {
+        return std::fabs(x - y) <= 1e-9 * std::max(1.0, std::fabs(y));
+    };
+
+    AcousticOpts a;
+    a.volume = V;
+    a.surface = 3000;
+    a.occupancy = 2;
+    auto row = [](int role, double area, double al) {
+        AbsorptionRow r;
+        r.role = role;
+        r.area = area;
+        for (double &x : r.alpha) x = al;
+        return r;
+    };
+    a.absorption = { row(AbsorptionRow::SideWall, 400, 0.10),
+                     row(AbsorptionRow::Ceiling,  600, 0.30),
+                     row(AbsorptionRow::Floor,    500, 0.20) };
+    // 基準の吸音力 A0 = 40 + 180 + 100 = 320 Sabin
+
+    QVector<VaMechanism> m(3);
+    m[0].key = "opening";                 // 開口 (バジェット外の面を足す)
+    m[0].role = AbsorptionRow::RearWall;
+    m[0].area = 100;
+    for (int b = 0; b < 6; ++b) { m[0].alpha[0][b] = 0.10; m[0].alpha[1][b] = 0.60; }
+    m[1].key = "banner";                  // 側壁を覆う
+    m[1].role = AbsorptionRow::SideWall;
+    m[1].replaces = true;
+    m[1].area = 150;
+    m[1].hasAlpha[1] = false;             // 巻取 = バジェットのまま
+    for (int b = 0; b < 6; ++b) m[1].alpha[0][b] = 0.70;
+    m[2].key = "electronic";              // 能動系
+    m[2].active = true;
+
+    // 開口: 状態 0 (α 0.1) → A = 320 + 10、状態 1 (α 0.6) → A = 320 + 60
+    {
+        const VaCase c0 = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        const VaCase c1 = variableAcousticsCase(a, m, { 1, 1, 0 }, 0);
+        check(c0.ok && c1.ok, "va: cases computed");
+        bool all0 = true, all1 = true;
+        for (int b = 0; b < 6; ++b) {
+            all0 = all0 && close(c0.rt[b], sab(330));
+            all1 = all1 && close(c1.rt[b], sab(380));
+        }
+        check(all0, "va: opening state 0 adds S*alpha0 (Sabine closed form)");
+        check(all1, "va: opening state 1 adds S*alpha1 (Sabine closed form)");
+        check(close(c0.rtMid, 0.5 * (c0.rt[2] + c0.rt[3])), "va: T_mid = (T500+T1k)/2");
+        check(c0.rtMid > c1.rtMid, "va: more absorptive state gives shorter RT");
+    }
+    // 覆う機構: 側壁 400 → 250 (α 0.1) + バナー 150 (α 0.7)
+    //   A = 25 + 180 + 100 + 10 (開口 状態0) + 105 = 420
+    {
+        const VaCase c = variableAcousticsCase(a, m, { 0, 0, 0 }, 0);
+        check(c.ok && close(c.rt[3], sab(420)),
+              "va: covering mechanism replaces wall area (Sabine closed form)");
+        // 覆っても載っている面積の合計は変わらない (Eyring の S と整合)
+        const VaCase u = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        check(close(c.listedArea, 1600) && close(u.listedArea, 1600),
+              "va: covering keeps listed area (1500 + 100 opening)");
+    }
+    // 同じ role の行が複数あれば面積比で按分する:
+    //   側壁 300 (α0.1) + 100 (α0.2) から 200 を覆う → 150 + 50 が残る
+    {
+        AcousticOpts b2 = a;
+        b2.absorption = { row(AbsorptionRow::SideWall, 300, 0.10),
+                          row(AbsorptionRow::SideWall, 100, 0.20),
+                          row(AbsorptionRow::Ceiling,  600, 0.30) };
+        QVector<VaMechanism> one = { m[1] };
+        one[0].area = 200;
+        const VaCase c = variableAcousticsCase(b2, one, { 0 }, 0);
+        // A = 150·0.1 + 50·0.2 + 180 + 200·0.7 = 15 + 10 + 180 + 140 = 345
+        check(c.ok && close(c.rt[0], sab(345)),
+              "va: covered area split across rows by area ratio");
+    }
+    // 能動系は受動計算に入らない / 無効な機構は何も変えない
+    {
+        const VaCase off = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        const VaCase on  = variableAcousticsCase(a, m, { 0, 1, 1 }, 0);
+        check(on.ok && on.rtMid == off.rtMid,
+              "va: active (electronic) mechanism ignored by passive model");
+        QVector<VaMechanism> none = m;
+        for (VaMechanism &x : none) x.enabled = false;
+        bool same = true;
+        const VaCase n = variableAcousticsCase(a, none, { 0, 0, 1 }, 1);
+        for (int b = 0; b < 6; ++b) same = same && n.rt[b] == rt60(a, b, 1);
+        check(n.ok && same,
+              "va: all mechanisms disabled = base budget (bit-identical, Eyring)");
+    }
+    // 覆う面が足りなければ計算しない (理由を返す)
+    {
+        QVector<VaMechanism> big = m;
+        big[1].area = 500;   // 側壁は 400 しか無い
+        const VaCase c = variableAcousticsCase(a, big, { 0, 0, 0 }, 1);
+        check(!c.ok && c.failedMech == 1 && close(c.haveArea, 400),
+              "va: insufficient wall area reported (mechanism + available area)");
+        const VaCase rolled = variableAcousticsCase(a, big, { 0, 1, 0 }, 1);
+        check(rolled.ok, "va: rolled-up banner does not need the wall area");
+    }
+    // 載っている面積が総表面積 S を超えたら注意を立てる (計算はする)
+    {
+        AcousticOpts t = a;
+        t.surface = 1550;   // 1500 + 開口 100 = 1600 > 1550
+        const VaCase c = variableAcousticsCase(t, m, { 0, 1, 0 }, 1);
+        const VaCase ok = variableAcousticsCase(a, m, { 0, 1, 0 }, 1);
+        check(c.ok && c.overSurface && !ok.overSurface,
+              "va: listed area over total surface S is flagged");
+    }
+    // 既定の機構と用途別構成 (既定プロジェクトの吸音バジェット・Eyring)
+    {
+        const QVector<VaMechanism> d = defaultVaMechanisms();
+        check(d.size() == 4 && d[3].active && !d[0].active,
+              "va: 4 default mechanisms, electronic is the active one");
+        bool lens = true;
+        for (int p = 0; p < 4; ++p) lens = lens && vaPresetStates(p).size() == d.size();
+        check(lens, "va: presets give one state per mechanism");
+        Project proj;
+        const AcousticOpts &pa = proj.acoustic();
+        double mid[4];
+        bool allOk = true;
+        for (int p = 0; p < 4; ++p) {
+            const VaCase c = variableAcousticsCase(pa, d, vaPresetStates(p),
+                                                   pa.rtFormula);
+            allOk = allOk && c.ok && !c.overSurface;
+            mid[p] = c.rtMid;
+        }
+        check(allOk, "va: default hall computes all 4 presets within S");
+        // 吸音の大小から決まる順序: コンサート (反射板) > オペラ (舞台開口 +
+        // ピット開口) > 講演 (舞台開口 + バナー)。講演とポピュラーは同じ受動構成
+        check(mid[0] > mid[1] && mid[1] > mid[2],
+              "va: concert > opera > speech in T_mid");
+        check(mid[2] == mid[3], "va: speech and popular share the passive config");
+    }
 }
 
 static void testRoomModes()
@@ -27102,6 +27401,7 @@ int main(int argc, char *argv[])
     testVoxelizer();
     testGlassCatalog();
     testRoomAcoustics();
+    testVariableAcoustics();
     testOperaAcousticSettings();
     testProjectTemplates();
     testAcousticBudgets();
@@ -27111,6 +27411,7 @@ int main(int argc, char *argv[])
     testAudioEditEngine();
     testMovieExport();
     testCalibrationOffsetGate();
+    testVocalInputsEqual();
     testResampler();
     testRirSampleRateNotes();
     testAcousticPreflight();
