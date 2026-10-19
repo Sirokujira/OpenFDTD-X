@@ -11222,6 +11222,149 @@ static void testNotchCandidates()
           "notch: non-positive inputs yield no candidates");
 }
 
+// 可変音響 (反射板・吸音バナー・ピット蓋・電子残響) — RoomAcousticsTab の
+// 「各構成で一括解析」の計算部。期待値は Sabine の閉形式 RT = 0.161·V/A を
+// テスト側で独立に組み立てて比べる (実装の吸音力を読み返さない)。
+static void testVariableAcoustics()
+{
+    using namespace roomac;
+    g_file = "var-acoustics";
+    const double V = 10000.0;
+    auto sab = [V](double A) { return 0.161 * V / A; };
+    auto close = [](double x, double y) {
+        return std::fabs(x - y) <= 1e-9 * std::max(1.0, std::fabs(y));
+    };
+
+    AcousticOpts a;
+    a.volume = V;
+    a.surface = 3000;
+    a.occupancy = 2;
+    auto row = [](int role, double area, double al) {
+        AbsorptionRow r;
+        r.role = role;
+        r.area = area;
+        for (double &x : r.alpha) x = al;
+        return r;
+    };
+    a.absorption = { row(AbsorptionRow::SideWall, 400, 0.10),
+                     row(AbsorptionRow::Ceiling,  600, 0.30),
+                     row(AbsorptionRow::Floor,    500, 0.20) };
+    // 基準の吸音力 A0 = 40 + 180 + 100 = 320 Sabin
+
+    QVector<VaMechanism> m(3);
+    m[0].key = "opening";                 // 開口 (バジェット外の面を足す)
+    m[0].role = AbsorptionRow::RearWall;
+    m[0].area = 100;
+    for (int b = 0; b < 6; ++b) { m[0].alpha[0][b] = 0.10; m[0].alpha[1][b] = 0.60; }
+    m[1].key = "banner";                  // 側壁を覆う
+    m[1].role = AbsorptionRow::SideWall;
+    m[1].replaces = true;
+    m[1].area = 150;
+    m[1].hasAlpha[1] = false;             // 巻取 = バジェットのまま
+    for (int b = 0; b < 6; ++b) m[1].alpha[0][b] = 0.70;
+    m[2].key = "electronic";              // 能動系
+    m[2].active = true;
+
+    // 開口: 状態 0 (α 0.1) → A = 320 + 10、状態 1 (α 0.6) → A = 320 + 60
+    {
+        const VaCase c0 = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        const VaCase c1 = variableAcousticsCase(a, m, { 1, 1, 0 }, 0);
+        check(c0.ok && c1.ok, "va: cases computed");
+        bool all0 = true, all1 = true;
+        for (int b = 0; b < 6; ++b) {
+            all0 = all0 && close(c0.rt[b], sab(330));
+            all1 = all1 && close(c1.rt[b], sab(380));
+        }
+        check(all0, "va: opening state 0 adds S*alpha0 (Sabine closed form)");
+        check(all1, "va: opening state 1 adds S*alpha1 (Sabine closed form)");
+        check(close(c0.rtMid, 0.5 * (c0.rt[2] + c0.rt[3])), "va: T_mid = (T500+T1k)/2");
+        check(c0.rtMid > c1.rtMid, "va: more absorptive state gives shorter RT");
+    }
+    // 覆う機構: 側壁 400 → 250 (α 0.1) + バナー 150 (α 0.7)
+    //   A = 25 + 180 + 100 + 10 (開口 状態0) + 105 = 420
+    {
+        const VaCase c = variableAcousticsCase(a, m, { 0, 0, 0 }, 0);
+        check(c.ok && close(c.rt[3], sab(420)),
+              "va: covering mechanism replaces wall area (Sabine closed form)");
+        // 覆っても載っている面積の合計は変わらない (Eyring の S と整合)
+        const VaCase u = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        check(close(c.listedArea, 1600) && close(u.listedArea, 1600),
+              "va: covering keeps listed area (1500 + 100 opening)");
+    }
+    // 同じ role の行が複数あれば面積比で按分する:
+    //   側壁 300 (α0.1) + 100 (α0.2) から 200 を覆う → 150 + 50 が残る
+    {
+        AcousticOpts b2 = a;
+        b2.absorption = { row(AbsorptionRow::SideWall, 300, 0.10),
+                          row(AbsorptionRow::SideWall, 100, 0.20),
+                          row(AbsorptionRow::Ceiling,  600, 0.30) };
+        QVector<VaMechanism> one = { m[1] };
+        one[0].area = 200;
+        const VaCase c = variableAcousticsCase(b2, one, { 0 }, 0);
+        // A = 150·0.1 + 50·0.2 + 180 + 200·0.7 = 15 + 10 + 180 + 140 = 345
+        check(c.ok && close(c.rt[0], sab(345)),
+              "va: covered area split across rows by area ratio");
+    }
+    // 能動系は受動計算に入らない / 無効な機構は何も変えない
+    {
+        const VaCase off = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        const VaCase on  = variableAcousticsCase(a, m, { 0, 1, 1 }, 0);
+        check(on.ok && on.rtMid == off.rtMid,
+              "va: active (electronic) mechanism ignored by passive model");
+        QVector<VaMechanism> none = m;
+        for (VaMechanism &x : none) x.enabled = false;
+        bool same = true;
+        const VaCase n = variableAcousticsCase(a, none, { 0, 0, 1 }, 1);
+        for (int b = 0; b < 6; ++b) same = same && n.rt[b] == rt60(a, b, 1);
+        check(n.ok && same,
+              "va: all mechanisms disabled = base budget (bit-identical, Eyring)");
+    }
+    // 覆う面が足りなければ計算しない (理由を返す)
+    {
+        QVector<VaMechanism> big = m;
+        big[1].area = 500;   // 側壁は 400 しか無い
+        const VaCase c = variableAcousticsCase(a, big, { 0, 0, 0 }, 1);
+        check(!c.ok && c.failedMech == 1 && close(c.haveArea, 400),
+              "va: insufficient wall area reported (mechanism + available area)");
+        const VaCase rolled = variableAcousticsCase(a, big, { 0, 1, 0 }, 1);
+        check(rolled.ok, "va: rolled-up banner does not need the wall area");
+    }
+    // 載っている面積が総表面積 S を超えたら注意を立てる (計算はする)
+    {
+        AcousticOpts t = a;
+        t.surface = 1550;   // 1500 + 開口 100 = 1600 > 1550
+        const VaCase c = variableAcousticsCase(t, m, { 0, 1, 0 }, 1);
+        const VaCase ok = variableAcousticsCase(a, m, { 0, 1, 0 }, 1);
+        check(c.ok && c.overSurface && !ok.overSurface,
+              "va: listed area over total surface S is flagged");
+    }
+    // 既定の機構と用途別構成 (既定プロジェクトの吸音バジェット・Eyring)
+    {
+        const QVector<VaMechanism> d = defaultVaMechanisms();
+        check(d.size() == 4 && d[3].active && !d[0].active,
+              "va: 4 default mechanisms, electronic is the active one");
+        bool lens = true;
+        for (int p = 0; p < 4; ++p) lens = lens && vaPresetStates(p).size() == d.size();
+        check(lens, "va: presets give one state per mechanism");
+        Project proj;
+        const AcousticOpts &pa = proj.acoustic();
+        double mid[4];
+        bool allOk = true;
+        for (int p = 0; p < 4; ++p) {
+            const VaCase c = variableAcousticsCase(pa, d, vaPresetStates(p),
+                                                   pa.rtFormula);
+            allOk = allOk && c.ok && !c.overSurface;
+            mid[p] = c.rtMid;
+        }
+        check(allOk, "va: default hall computes all 4 presets within S");
+        // 吸音の大小から決まる順序: コンサート (反射板) > オペラ (舞台開口 +
+        // ピット開口) > 講演 (舞台開口 + バナー)。講演とポピュラーは同じ受動構成
+        check(mid[0] > mid[1] && mid[1] > mid[2],
+              "va: concert > opera > speech in T_mid");
+        check(mid[2] == mid[3], "va: speech and popular share the passive config");
+    }
+}
+
 static void testRoomModes()
 {
     namespace rm = ofd::acoustics::roommodes;
@@ -27258,6 +27401,7 @@ int main(int argc, char *argv[])
     testVoxelizer();
     testGlassCatalog();
     testRoomAcoustics();
+    testVariableAcoustics();
     testOperaAcousticSettings();
     testProjectTemplates();
     testAcousticBudgets();

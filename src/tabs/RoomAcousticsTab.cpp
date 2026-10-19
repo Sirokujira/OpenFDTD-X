@@ -273,9 +273,65 @@ const bool s_i18n = [] {
               "Hall).");
     I18n::reg("rah_col_mech", "機構", "Mechanism");
     I18n::reg("rah_col_state", "状態", "State");
-    I18n::reg("rah_col_rtchange", "RT変化", "ΔRT");
-    I18n::reg("rah_va_now", "現在の構成: RT = %1 + 0.35 = %2 s (コンサート形式)",
-              "Current config: RT = %1 + 0.35 = %2 s (concert)");
+    I18n::reg("rah_col_rtchange", "ΔT_mid (1番目 − 2番目)",
+              "ΔT_mid (1st − 2nd state)");
+    I18n::reg("rah_col_va_area", "面積", "Area");
+    I18n::reg("rah_va_now",
+              "表の状態での T_mid = %1 s (%2、吸音バジェットから計算)",
+              "T_mid in the table's states = %1 s (%2, from the absorption "
+              "budget)");
+    I18n::reg("rah_va_model_hint",
+              "各機構の状態を吸音バジェットの変化として計算します。反射板の"
+              "合板・吸音バナーのベロア・舞台床は標準的な吸音率表の値、舞台"
+              "開口とピット開口は慣用値 0.25〜0.75 の中央 0.50 です (最も不確かな"
+              "入力)。開口の面は総表面積 S には含まれるが吸音バジェットの表には"
+              "無い面 (吸音率≈0 として扱われていた面) に置くので、機構を入れると"
+              "表だけの値より RT が短く出ることがあります。吸音バナーは側壁の"
+              "面積を置き換えます。電子残響は能動系のため計算に含めません。"
+              "面積は既定ホール (30×20×12 m) の代表値なので実ホールに合わせて"
+              "編集してください。",
+              "Each mechanism's state is computed as a change of the absorption "
+              "budget. The shell's plywood, the banners' velour and the stage "
+              "floor use standard absorption tables; the stage and pit openings "
+              "use 0.50, the middle of the customary 0.25-0.75 (the least "
+              "certain input). Openings are placed on surface that is part of "
+              "the total area S but not listed in the budget (treated as α≈0), "
+              "so adding mechanisms can make RT shorter than the budget alone. "
+              "Banners replace side-wall area. Electronic reverberation is an "
+              "active system and is not included. Areas are typical of the "
+              "default hall (30×20×12 m) — edit them to match the real hall.");
+    I18n::reg("rah_va_active_na", "能動系 — 計算対象外",
+              "Active system — not computed");
+    I18n::reg("rah_va_err_area",
+              "%1 が覆う %2 m² に対し、同じ向きの面が %3 m² しかありません "
+              "(吸音バジェットの面積を確認してください)",
+              "%1 covers %2 m² but only %3 m² of that surface exists "
+              "(check the absorption budget)");
+    I18n::reg("rah_va_warn_surface",
+              "注意: 吸音バジェットと機構の面積の合計 %1 m² が総表面積 "
+              "S = %2 m² を超えています",
+              "Note: budget + mechanism area %1 m² exceeds the total "
+              "surface S = %2 m²");
+    I18n::reg("rah_va_csv", "CSV 保存", "Save CSV");
+    I18n::reg("rah_va_col_case", "構成", "Configuration");
+    I18n::reg("rah_va_col_states", "機構の状態", "Mechanism states");
+    I18n::reg("rah_va_case_concert", "コンサート", "Concert");
+    I18n::reg("rah_va_case_opera", "オペラ", "Opera");
+    I18n::reg("rah_va_case_speech", "講演", "Speech");
+    I18n::reg("rah_va_case_popular", "ポピュラー", "Popular");
+    I18n::reg("rah_va_result_note",
+              "%1 で計算 (RT60 [s]、T_mid = 500 Hz と 1 kHz の平均)。"
+              "講演とポピュラーは受動構成が同じなので同じ値になります (違いは"
+              "拡声系)。電子残響は含めていません。",
+              "Computed with %1 (RT60 [s], T_mid = mean of 500 Hz and "
+              "1 kHz). Speech and popular share the same passive "
+              "configuration, so their values are equal (the difference is "
+              "the sound system). Electronic reverberation is not included.");
+    I18n::reg("rah_va_stale",
+              "入力 (機構・吸音バジェット) が変わったため、一括解析の結果を"
+              "消しました。もう一度実行してください。",
+              "The inputs (mechanisms or absorption budget) changed, so the "
+              "batch result was cleared. Run it again.");
     I18n::reg("rah_va_batch", "▶ 各構成で一括解析 (4ケース)",
               "▶ Batch-run all configs (4 cases)");
     I18n::reg("rah_va_batch_hint",
@@ -1879,6 +1935,14 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
 }
 
 // ステージ支援 ST + 可変音響 (可動反射板/バナー/電子残響) + カップルドボリューム。
+// 可変音響の状態の表示名 (roomac::defaultVaMechanisms() の行順・状態順)
+static const char *const kVaStates[4][2] = {
+    { "rah_va_deployed", "rah_va_stored" },   // 反射板
+    { "rah_va_unrolled", "rah_va_rolled" },   // 吸音バナー
+    { "rah_va_concert",  "rah_va_opera" },    // 床迫り・ピット蓋
+    { "rah_off",         "rah_on" },          // 電子残響
+};
+
 QWidget *RoomAcousticsTab::buildStagePage()
 {
     auto *page = new QWidget;
@@ -1913,42 +1977,71 @@ QWidget *RoomAcousticsTab::buildStagePage()
     s->vbox()->addWidget(makeCheck(I18n::tr("rah_st_matrix"), false, s));
     v->addWidget(s);
 
-    // ── 可変音響
+    // ── 可変音響 (機構の状態 → 吸音バジェット → rt60。roomac の VaMechanism)
     auto *sv = new SectionBox(I18n::tr("rah_va_section"), page);
     sv->vbox()->addWidget(makeHint(I18n::tr("rah_va_hint"), sv));
-    auto *va = makeStaticTable(sv,
+    sv->vbox()->addWidget(makeHint(I18n::tr("rah_va_model_hint"), sv));
+    const QVector<roomac::VaMechanism> vaDef = roomac::defaultVaMechanisms();
+    m_vaTable = makeStaticTable(sv,
         { "", I18n::tr("rah_col_mech"), I18n::tr("rah_col_state"),
-          I18n::tr("rah_col_rtchange") }, 4);
-    static const struct { const char *mech, *s0, *s1, *drt; bool on; int sel; }
-    kVa[4] = {
-        { "rah_va_shell",      "rah_va_deployed", "rah_va_stored",
-          "+0.35 s",      true,  0 },
-        { "rah_va_banner",     "rah_va_unrolled", "rah_va_rolled",
-          "-0.3 s",       false, 1 },
-        { "rah_va_pitlid",     "rah_va_concert",  "rah_va_opera",
-          "±0.1 s",       false, 0 },
-        { "rah_va_electronic", "rah_off",         "rah_on",
-          "+0.2〜1.5 s",  false, 0 },
-    };
-    for (int r = 0; r < 4; ++r) {
-        va->setItem(r, 0, checkItem(kVa[r].on));
-        va->setItem(r, 1, new QTableWidgetItem(I18n::tr(kVa[r].mech)));
-        auto *seg = new QComboBox(va);
-        seg->addItems({ I18n::tr(kVa[r].s0), I18n::tr(kVa[r].s1) });
-        seg->setCurrentIndex(kVa[r].sel);
-        va->setCellWidget(r, 2, seg);
-        va->setItem(r, 3, numItem(QString::fromUtf8(kVa[r].drt)));
+          I18n::tr("rah_col_va_area"), I18n::tr("rah_col_rtchange") },
+        vaDef.size());
+    // 状態の表示名は kVaStates (状態 0 / 状態 1)。初期状態はコンサート構成
+    const QVector<int> concert = roomac::vaPresetStates(0);
+    m_vaState.clear();
+    m_vaArea.clear();
+    for (int r = 0; r < vaDef.size(); ++r) {
+        const roomac::VaMechanism &mech = vaDef[r];
+        m_vaTable->setItem(r, 0, checkItem(true));
+        m_vaTable->setItem(r, 1, new QTableWidgetItem(I18n::tr(mech.key)));
+        auto *seg = new QComboBox(m_vaTable);
+        seg->addItems({ I18n::tr(kVaStates[r][0]), I18n::tr(kVaStates[r][1]) });
+        seg->setCurrentIndex(concert.value(r));
+        m_vaTable->setCellWidget(r, 2, seg);
+        m_vaState << seg;
+        auto *area = plainSpin(m_vaTable, 0, 5000, mech.area);
+        area->setSuffix(QString::fromUtf8(" m²"));
+        area->setEnabled(!mech.active);   // 能動系に面積は無い
+        m_vaTable->setCellWidget(r, 3, area);
+        m_vaArea << area;
+        m_vaTable->setItem(r, 4, numItem(QString()));
+        connect(seg, &QComboBox::currentIndexChanged, this,
+                [this](int) { refreshVariableAcoustics(); });
+        connect(area, &QDoubleSpinBox::valueChanged, this,
+                [this](double) { refreshVariableAcoustics(); });
     }
-    sv->vbox()->addWidget(va);
+    connect(m_vaTable, &QTableWidget::itemChanged, this,
+            [this](QTableWidgetItem *it) {
+        if (it && it->column() == 0) refreshVariableAcoustics();
+    });
+    sv->vbox()->addWidget(m_vaTable);
     m_stageRtBadge = makeBadge(QString(), kAcc, sv);
+    m_stageRtBadge->setWordWrap(true);
     sv->vbox()->addWidget(m_stageRtBadge);
     auto *batch = new QHBoxLayout();
     auto *batchBtn = new QPushButton(I18n::tr("rah_va_batch"), sv);
     batchBtn->setStyleSheet("font-weight:600;");
-    tabhelp::markNotImplemented(batchBtn, I18n::tr(tabhelp::notimpl::kEngine));   // 一括解析は未配線
     batch->addWidget(batchBtn);
     batch->addWidget(makeHint(I18n::tr("rah_va_batch_hint"), sv), 1);
+    m_vaCsvBtn = new QPushButton(I18n::tr("rah_va_csv"), sv);
+    m_vaCsvBtn->setEnabled(false);   // 一括解析の結果があるときだけ
+    batch->addWidget(m_vaCsvBtn);
     sv->vbox()->addLayout(batch);
+    QStringList resHead { I18n::tr("rah_va_col_case"),
+                          I18n::tr("rah_va_col_states") };
+    for (double f : roomac::kBandHz)
+        resHead << (f >= 1000 ? QString::number(f / 1000) + "k" : QString::number(f));
+    resHead << QStringLiteral("T_mid");
+    m_vaResult = makeStaticTable(sv, resHead, 4);
+    m_vaResult->setVisible(false);   // 押されるまで出さない (未実行の表を見せない)
+    sv->vbox()->addWidget(m_vaResult);
+    m_vaResultNote = makeHint(QString(), sv);
+    m_vaResultNote->setVisible(false);
+    sv->vbox()->addWidget(m_vaResultNote);
+    connect(batchBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::runVariableAcousticsBatch);
+    connect(m_vaCsvBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::exportVariableAcousticsCsv);
     v->addWidget(sv);
 
     // ── カップルドボリューム
@@ -2742,10 +2835,194 @@ void RoomAcousticsTab::refreshHallDerived()
 
     // IR解析 / 空間印象は実計算 (refreshIrPage / refreshSpatialPage) 側で更新。
 
-    // ── ステージ: 反射板設置時の RT (mock の +0.35 s)
-    m_stageRtBadge->setText(I18n::tr("rah_va_now")
-        .arg(QString::number(H.RT, 'f', 2),
-             QString::number(H.RT + 0.35, 'f', 2)));
+    // ステージ/可変音響の RT は吸音バジェットからの実計算
+    // (refreshVariableAcoustics) 側で更新する。
+}
+
+// ── 可変音響 ────────────────────────────────────────────────────────────────
+// 表 (有無・状態・面積) は .ofdx に保存しない画面上の検討用の入力。計算は
+// roomac::variableAcousticsCase (吸音バジェットへ機構の面を適用して rt60)。
+QVector<roomac::VaMechanism> RoomAcousticsTab::vaMechanismsFromTable() const
+{
+    QVector<roomac::VaMechanism> m = roomac::defaultVaMechanisms();
+    for (int r = 0; r < m.size() && m_vaTable && r < m_vaTable->rowCount(); ++r) {
+        const QTableWidgetItem *en = m_vaTable->item(r, 0);
+        m[r].enabled = !en || en->checkState() == Qt::Checked;
+        if (r < m_vaArea.size()) m[r].area = m_vaArea[r]->value();
+    }
+    return m;
+}
+
+QVector<int> RoomAcousticsTab::vaStatesFromTable() const
+{
+    QVector<int> st;
+    for (QComboBox *c : m_vaState) st << c->currentIndex();
+    return st;
+}
+
+static QString vaFormulaName(int f)
+{
+    return f == 0 ? QStringLiteral("Sabine")
+         : f == 2 ? QStringLiteral("Fitzroy") : QStringLiteral("Eyring");
+}
+
+static QString vaErrorText(const roomac::VaCase &c,
+                           const QVector<roomac::VaMechanism> &m)
+{
+    const roomac::VaMechanism &x = m.value(c.failedMech);
+    return I18n::tr("rah_va_err_area")
+        .arg(I18n::tr(x.key), QString::number(x.area, 'f', 0),
+             QString::number(c.haveArea, 'f', 0));
+}
+
+void RoomAcousticsTab::refreshVariableAcoustics()
+{
+    if (!m_vaTable) return;
+    const AcousticOpts &a = m_p->acoustic();
+    const QVector<roomac::VaMechanism> mech = vaMechanismsFromTable();
+    const QVector<int> st = vaStatesFromTable();
+    const int f = qBound(0, a.rtFormula, 2);
+
+    const roomac::VaCase now = roomac::variableAcousticsCase(a, mech, st, f);
+    if (now.ok) {
+        QString t = I18n::tr("rah_va_now")
+            .arg(QString::number(now.rtMid, 'f', 2), vaFormulaName(f));
+        if (now.overSurface)
+            t += QStringLiteral("\n") + I18n::tr("rah_va_warn_surface")
+                .arg(QString::number(now.listedArea, 'f', 0),
+                     QString::number(a.surface, 'f', 0));
+        m_stageRtBadge->setText(t);
+        m_stageRtBadge->setStyleSheet(QStringLiteral("color:%1; font-weight:600;")
+            .arg(QLatin1String(now.overSurface ? kWarn : kAcc)));
+    } else {
+        m_stageRtBadge->setText(vaErrorText(now, mech));
+        m_stageRtBadge->setStyleSheet(QStringLiteral("color:%1; font-weight:600;")
+            .arg(QLatin1String(kErr)));
+    }
+
+    // 各機構の ΔT_mid = T_mid(1 番目の状態) − T_mid(2 番目の状態)
+    // (他の機構は表の状態のまま)
+    for (int r = 0; r < mech.size() && r < m_vaTable->rowCount(); ++r) {
+        QString cell = QString::fromUtf8("—");
+        if (mech[r].enabled && mech[r].active) {
+            cell = I18n::tr("rah_va_active_na");
+        } else if (mech[r].enabled) {
+            QVector<int> s0 = st, s1 = st;
+            s0[r] = 0;
+            s1[r] = 1;
+            const roomac::VaCase c0 = roomac::variableAcousticsCase(a, mech, s0, f);
+            const roomac::VaCase c1 = roomac::variableAcousticsCase(a, mech, s1, f);
+            if (c0.ok && c1.ok) {
+                const double d = c0.rtMid - c1.rtMid;
+                cell = (d >= 0 ? QStringLiteral("+") : QString())
+                       + QString::number(d, 'f', 2) + QStringLiteral(" s");
+            }
+        }
+        if (QTableWidgetItem *it = m_vaTable->item(r, 4)) it->setText(cell);
+    }
+
+    // 一括解析が読む入力 (吸音バジェット・式・機構の表) が変わったときだけ
+    // 結果を消す。Project::changed は他タブの編集でも飛ぶので、4 ケースを
+    // 計算し直して表示中の値と食い違うかで判定する (4 ケースなので安い)
+    if (m_vaHasResult && vaBatchKey() != m_vaResultKey) {
+        m_vaHasResult = false;
+        m_vaResult->setVisible(false);
+        m_vaCsvBtn->setEnabled(false);
+        m_vaResultNote->setText(I18n::tr("rah_va_stale"));
+        m_vaResultNote->setVisible(true);
+    }
+}
+
+QVector<double> RoomAcousticsTab::vaBatchKey() const
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const QVector<roomac::VaMechanism> mech = vaMechanismsFromTable();
+    const int f = qBound(0, a.rtFormula, 2);
+    QVector<double> key;
+    key << f;
+    for (int p = 0; p < 4; ++p) {
+        const roomac::VaCase c =
+            roomac::variableAcousticsCase(a, mech, roomac::vaPresetStates(p), f);
+        key << (c.ok ? 1 : 0) << c.failedMech << (c.overSurface ? 1 : 0);
+        for (double t : c.rt) key << t;
+    }
+    for (const roomac::VaMechanism &m : mech) key << (m.enabled ? 1 : 0);
+    return key;
+}
+
+void RoomAcousticsTab::runVariableAcousticsBatch()
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const QVector<roomac::VaMechanism> mech = vaMechanismsFromTable();
+    const int f = qBound(0, a.rtFormula, 2);
+    static const char *const kCase[4] = {
+        "rah_va_case_concert", "rah_va_case_opera",
+        "rah_va_case_speech",  "rah_va_case_popular" };
+    QStringList problems;
+    for (int p = 0; p < 4; ++p) {
+        const QVector<int> st = roomac::vaPresetStates(p);
+        // 機構の状態の要約 (表で外した機構は出さない)
+        QStringList sum;
+        for (int r = 0; r < mech.size() && r < 4; ++r) {
+            if (!mech[r].enabled) continue;
+            sum << I18n::tr(mech[r].key) + QStringLiteral(": ")
+                       + I18n::tr(kVaStates[r][qBound(0, st.value(r), 1)]);
+        }
+        m_vaResult->setItem(p, 0, new QTableWidgetItem(I18n::tr(kCase[p])));
+        m_vaResult->setItem(p, 1, new QTableWidgetItem(sum.join(QStringLiteral(" / "))));
+        const roomac::VaCase c = roomac::variableAcousticsCase(a, mech, st, f);
+        for (int b = 0; b < 6; ++b)
+            m_vaResult->setItem(p, 2 + b, numItem(c.ok
+                ? QString::number(c.rt[b], 'f', 2) : QString::fromUtf8("—")));
+        m_vaResult->setItem(p, 8, numItem(c.ok
+            ? QString::number(c.rtMid, 'f', 2) : QString::fromUtf8("—")));
+        if (!c.ok) {
+            problems << I18n::tr(kCase[p]) + QStringLiteral(": ") + vaErrorText(c, mech);
+        } else if (c.overSurface) {
+            problems << I18n::tr(kCase[p]) + QStringLiteral(": ")
+                + I18n::tr("rah_va_warn_surface")
+                      .arg(QString::number(c.listedArea, 'f', 0),
+                           QString::number(a.surface, 'f', 0));
+        }
+    }
+    QString note = I18n::tr("rah_va_result_note").arg(vaFormulaName(f));
+    if (!problems.isEmpty())
+        note += QStringLiteral("\n") + problems.join(QStringLiteral("\n"));
+    m_vaResultNote->setText(note);
+    m_vaResultNote->setVisible(true);
+    m_vaResult->setVisible(true);
+    m_vaCsvBtn->setEnabled(true);
+    m_vaHasResult = true;
+    m_vaResultKey = vaBatchKey();
+}
+
+void RoomAcousticsTab::exportVariableAcousticsCsv()
+{
+    if (!m_vaHasResult) return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("rah_va_csv"), "variable_acoustics.csv", "CSV (*.csv)");
+    if (path.isEmpty()) return;
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    auto quote = [](QString v) {
+        v.replace('"', QStringLiteral("\"\""));
+        return '"' + v + '"';
+    };
+    QStringList head;
+    for (int c = 0; c < m_vaResult->columnCount(); ++c)
+        head << quote(m_vaResult->horizontalHeaderItem(c)->text());
+    out << head.join(',') << '\n';
+    for (int r = 0; r < m_vaResult->rowCount(); ++r) {
+        QStringList row;
+        for (int c = 0; c < m_vaResult->columnCount(); ++c) {
+            const QTableWidgetItem *it = m_vaResult->item(r, c);
+            const QString v = it ? it->text() : QString();
+            row << (c < 2 ? quote(v) : v);
+        }
+        out << row.join(',') << '\n';
+    }
 }
 
 // ── IR解析ページ ────────────────────────────────────────────────────────────
@@ -3367,6 +3644,8 @@ void RoomAcousticsTab::refreshBudgetDerived()
             it->setText(QString::number(A1k, 'f', 0));
     }
     m_updating = false;
+    // 可変音響の ΔT は吸音バジェットから計算するので、編集の度に追随させる
+    refreshVariableAcoustics();
 }
 
 void RoomAcousticsTab::applyBudgetTable()
@@ -3548,6 +3827,7 @@ void RoomAcousticsTab::recomputeAll()
     refreshIrPage();
     refreshSpatialPage();
     refreshReinforcePage();
+    refreshVariableAcoustics();
 }
 
 // ── レポート出力 ────────────────────────────────────────────────────────────

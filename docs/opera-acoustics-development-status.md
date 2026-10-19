@@ -134,15 +134,16 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   0 failures / `ctest` = 23 テスト, 0 failures** (`USE_HDF5=ON` +
   実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
   `USE_HDF5=OFF` の既定ビルドでは 11,258)。
-  **現在値 (2026-10-18 実測、`USE_HDF5=ON` / カーネル無し):
-  `ofdx_selftest` = 24 files loaded, 11,389 checks, 0 failures /
+  **現在値 (2026-10-19 実測、`USE_HDF5=ON` / カーネル無し):
+  `ofdx_selftest` = 24 files loaded, 11,407 checks, 0 failures /
   `ctest` = 23 テスト 0 failures (checks 合計 1,911)**。
   内訳の変化は負債 #5 (C API api_version 2) の `test_c_api` +242 (281 checks)、
   負債 #6 (WAV ストリーミング読み) の `test_wav` +14 (66 checks)、
   `ofdx-schema` への追加 +5 (13 checks — 版の更新で未知キーを失わないこと /
   未知の将来版も読めること)、音響編集の連結が変換できない fs 比で黙って
   誤速度に結合しないこと (負債 #12 の取りこぼし) +6、歌声分析の非同期化
-  (負債 #15) の `vocal-async` +16。
+  (負債 #15) の `vocal-async` +16、可変音響の一括解析 (`var-acoustics`、
+  Sabine の閉形式と面積不足・S 超過の判定) +18。
 - 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1,900 checks,
   0 failures** (2026-10-18 実測。残り 2 本は `roomac.fitzroy` 11 checks と
   `kernel.runner_mpi`。従来の「15 テスト / 1292」はテスト追加を反映して
