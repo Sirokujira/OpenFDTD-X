@@ -161,6 +161,7 @@
 #include <QRegularExpression>
 #include <QDirIterator>
 #include <QStandardPaths>
+#include <QSettings>
 #include <QTemporaryDir>
 #include "../src/io/OfdPreview.h"
 #include "../src/io/RefractiveIndexDb.h"
@@ -27016,6 +27017,30 @@ static void testOfdxUnknownKeys()
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
+
+    // ── 実行環境から切り離す (hermetic) ──────────────────────────────────────
+    // (1) 設定 (QSettings) をこのプロセス専用の一時 INI へ隔離する。隔離しないと
+    //     Runner などが利用者の本物の設定 (Windows はレジストリ
+    //     HKCU\Software\OpenFDTD\Kernels) を読み書きし、
+    //     - GUI でカーネルの場所を登録済みの環境では「何も無ければ素の名前」の
+    //       検査が、登録された本物の ofd を見つけて必ず落ちる
+    //     - 設定を書き換える検査 (カーネルの場所 / MPI ランチャ) が、同じ PC で
+    //       並行して走る別の selftest の検査を壊す (実際に起きた)
+    //     - 途中で落ちると、利用者の設定が消えた一時ディレクトリを指したまま残る
+    //     QSettings() と、書式に defaultFormat() を渡す作り方の両方がここへ向く。
+    // (2) README が案内するカーネルの場所の環境変数 (*_HOME) を外す。開発者が
+    //     設定していると (1) と同じく結果が変わる。実カーネルを使う統合テストは
+    //     OFDX_*_BIN で明示的に渡すので影響しない。
+    QTemporaryDir isolatedSettings;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
+                       isolatedSettings.path());
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope,
+                       isolatedSettings.path());
+    for (const char *var : { "OPENFDTD_HOME", "OPENRCWA_HOME", "OPENBPM_HOME",
+                             "BELLHOPCUDA_HOME", "OPENPEEC_HOME", "OPENFEM_HOME",
+                             "OPENFDTD_ACOUSTICS_HOME" })
+        qunsetenv(var);
 
     // Resolve the sample directory: explicit arg first, then the bundled
     // tests/data (self-contained), then a sibling OpenFDTD checkout's data.
