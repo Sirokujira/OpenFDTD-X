@@ -5,9 +5,11 @@
 # selftest の統合スモーク (OFDX_OFD_BIN — dipole.ofd 実行 → normal end) と、
 # MPI 版 (ofd_mpi) を使う ctest の kernel.runner_mpi (Runner が mpiexec を
 # 起動して完走し、結果が CPU 実行と一致すること) を回す。
-# 水中 (bellhopcxx) も Linux ジョブでビルドし、GUI が書いた .env を実カーネルで
-# 走らせる統合スモーク (OFDX_BELLHOP_BIN) を回す。光 (orcwa/obpm) は
-# オプションカーネルで CI 対象外 (GUI 側の分岐は selftest が担保する)。
+# 水中 (bellhopcxx) と回路 (peec / ofe) も Linux ジョブでビルドし、GUI が書いた
+# 入力ファイルを実カーネルで走らせる統合スモーク (OFDX_BELLHOP_BIN /
+# OFDX_PEEC_BIN / OFDX_OFE_BIN) を回す。これで selftest の統合テストは CI で
+# 1 件も skip されない。光 (orcwa/obpm) はオプションカーネルで CI 対象外
+# (GUI 側の分岐は selftest が担保する)。
 # 3 OS とも USE_HDF5=ON でビルドする (HDF5 の読み書きは結果表示の必須経路で、
 # OFF のジョブでは io/H5Reader・io/H5Writer のテストが丸ごと skip されるため)。
 name: CI
@@ -75,11 +77,30 @@ jobs:
           cmake --build /tmp/bellhopcuda/build -j"$(nproc)" --target bellhopcxx
           test -x /tmp/bellhopcuda/bin/bellhopcxx
 
+      # 回路 (PEEC / FEM) の統合スモーク。GUI の回路ソルバタブが書いた .peec /
+      # .ofe を実カーネルに解かせ、角線の直流抵抗 (閉形式) とインダクタンス
+      # (OpenPEEC 自身の検証サンプルの記載値) が合うこと、FEM の渦電流解析が
+      # 最後まで解けることを selftest が見る。これまでは OFDX_PEEC_BIN /
+      # OFDX_OFE_BIN が無く skip されていた (selftest に残っていた最後の skip)。
+      # どちらも依存は OpenMP だけの C で、クリーンビルドは各 5 秒ほど (-j4 実測)。
+      # MIT ライセンスだが、ここでも GUI と同じく subprocess として起動するだけ。
+      - name: Build OpenPEEC / OpenFEM (circuit integration smoke)
+        run: |
+          for repo in OpenPEEC OpenFEM; do
+            git clone --depth 1 https://github.com/Sirokujira/$repo.git /tmp/$repo
+            cmake -S /tmp/$repo -B /tmp/$repo/build -DCMAKE_BUILD_TYPE=Release
+            cmake --build /tmp/$repo/build -j"$(nproc)"
+          done
+          test -x /tmp/OpenPEEC/bin/peec
+          test -x /tmp/OpenFEM/bin/ofe
+
       - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
         run: ./build/ofdx_selftest
         env:
           OFDX_OFD_BIN: /tmp/OpenFDTD/bin/ofd
           OFDX_BELLHOP_BIN: /tmp/bellhopcuda/bin/bellhopcxx
+          OFDX_PEEC_BIN: /tmp/OpenPEEC/bin/peec
+          OFDX_OFE_BIN: /tmp/OpenFEM/bin/ofe
 
       # 音響コア (C++14) は上の Build ステップに含まれる。ここでは CTest に
       # 登録された acoustics.* テストを実行する。合成 RIR による残響指標の
