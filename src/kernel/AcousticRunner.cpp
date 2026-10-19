@@ -35,14 +35,14 @@ static QStringList solverBaseNames(AcousticBackend backend) {
 // Runner::kernelDirSetting と同じ QSettings 領域に置く。
 QString AcousticRunner::solverPathSetting()
 {
-    QSettings s(QSettings::UserScope,
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
                 QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
     return s.value(QStringLiteral("OFDX_ACOUSTIC_SOLVER")).toString();
 }
 
 void AcousticRunner::setSolverPathSetting(const QString &path)
 {
-    QSettings s(QSettings::UserScope,
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
                 QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
     if (path.isEmpty()) s.remove(QStringLiteral("OFDX_ACOUSTIC_SOLVER"));
     else                s.setValue(QStringLiteral("OFDX_ACOUSTIC_SOLVER"), path);
