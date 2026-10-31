@@ -845,18 +845,27 @@ QByteArray OfdxIO::serialize(const Project &p)
             // そちらを音源一覧 (AcousticSourceTab の配置表) が既に使って
             // いるため — 意味も並びも別物なので分けてある (混ぜると
             // ソルバーが feed のゲインとして静かに誤読する)。
-            const AcousticOpts::FeedDrive def;
+            // 指向性 (ADR-0014) の directivity / aim と、行の他のキーも
+            // 「既定でない」に数える。行の他のキー (extra) はそのまま
+            // 書き戻す (GUI で gain を変えても手書きのキーを落とさない)。
             bool any = false;
             for (const AcousticOpts::FeedDrive &f : a.feedDrives)
-                if (f.gain != def.gain || f.delaySec != def.delaySec) {
+                if (!f.isDefault()) {
                     any = true;
                     break;
                 }
             if (any) {
                 QJsonArray fd;
-                for (const AcousticOpts::FeedDrive &f : a.feedDrives)
-                    fd.append(QJsonObject{ {"gain", f.gain},
-                                           {"delay_s", f.delaySec} });
+                for (const AcousticOpts::FeedDrive &f : a.feedDrives) {
+                    QJsonObject o = f.extra;
+                    o["gain"] = f.gain;
+                    o["delay_s"] = f.delaySec;
+                    if (!f.directivity.isUndefined())
+                        o["directivity"] = f.directivity;
+                    if (f.hasAim)
+                        o["aim"] = QJsonArray{ f.aim[0], f.aim[1], f.aim[2] };
+                    fd.append(o);
+                }
                 ac["feeds"] = fd;
             }
         }
@@ -1683,16 +1692,45 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         // キーが無い旧ファイルは空 (= 全 feed が既定 gain 1 / delay 0)。
         // 手書きファイルの範囲外値でソルバーが拒否する .ofdx を作らない
         // よう、契約の値域へクランプして読む。
+        // 指向性 (ADR-0014) : directivity の数値 a (単体・配列の各要素) は
+        // 0..1 へクランプし、名前はそのまま持つ (未知の名前はソルバーが
+        // 理由つきで拒否する — GUI が別の指向性へ黙って置き換えない)。
+        // aim は 3 要素の数値配列のときだけ読み、それ以外は行の他のキーと
+        // 同じく extra に残して書き戻す (同じくソルバーが理由つきで拒否)。
         if (ac.contains("feeds")) {
             a.feedDrives.clear();
             for (const QJsonValue &v : ac["feeds"].toArray()) {
-                const QJsonObject o = v.toObject();
+                QJsonObject o = v.toObject();
                 AcousticOpts::FeedDrive f;
                 f.gain = qBound(-1000.0, o.value("gain").toDouble(f.gain),
                                 1000.0);
                 f.delaySec = qBound(0.0,
                                     o.value("delay_s").toDouble(f.delaySec),
                                     1.0);
+                o.remove("gain");
+                o.remove("delay_s");
+                if (o.contains("directivity")) {
+                    QJsonValue d = o.value("directivity");
+                    if (d.isDouble()) {
+                        d = qBound(0.0, d.toDouble(), 1.0);
+                    } else if (d.isArray()) {
+                        QJsonArray arr = d.toArray();
+                        for (int i = 0; i < arr.size(); ++i)
+                            if (arr.at(i).isDouble())
+                                arr[i] = qBound(0.0, arr.at(i).toDouble(), 1.0);
+                        d = arr;
+                    }
+                    f.directivity = d;
+                    o.remove("directivity");
+                }
+                const QJsonArray aim = o.value("aim").toArray();
+                if (aim.size() == 3 && aim.at(0).isDouble()
+                    && aim.at(1).isDouble() && aim.at(2).isDouble()) {
+                    f.hasAim = true;
+                    for (int i = 0; i < 3; ++i) f.aim[i] = aim.at(i).toDouble();
+                    o.remove("aim");
+                }
+                f.extra = o;
                 a.feedDrives.push_back(f);
             }
         }

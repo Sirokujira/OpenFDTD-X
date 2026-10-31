@@ -4293,6 +4293,138 @@ static void testAudioEditEngine()
                   "feeds-ofdx: missing key means every feed at gain 1 / delay 0");
         }
 
+        // ── 音源の指向性 (.ofdx acoustic.feeds[].directivity / aim —
+        //    ADR-0014) ──
+        // 無指向のままならキーを書かず、名前・向きは往復し、手書きの数値・
+        // 配列・行の未知キーは GUI 経由の保存で落ちない。
+        {
+            ofd::Project dp;
+            QString e6;
+            const QString p6 = dir.filePath("feeddir.ofd");
+            const QString sc6 = dir.filePath("feeddir.ofdx");
+            auto bytes6 = [&] {
+                QFile f(sc6);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto feeds6 = [&] {
+                return QJsonDocument::fromJson(bytes6()).object()["acoustic"]
+                    .toObject()["feeds"].toArray();
+            };
+            auto writeFeeds6 = [&](const QJsonArray &rows) {
+                QFile f(sc6);
+                if (!f.open(QIODevice::ReadOnly)) return false;
+                QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+                f.close();
+                QJsonObject acObj = root["acoustic"].toObject();
+                acObj["feeds"] = rows;
+                root["acoustic"] = acObj;
+                QFile w(sc6);
+                if (!w.open(QIODevice::WriteOnly)) return false;
+                w.write(QJsonDocument(root).toJson());
+                return true;
+            };
+            check(dp.save(p6, &e6), "dir-ofdx: default saved");
+            const QByteArray base6 = bytes6();
+
+            // 無指向の既定行 (directivity 未定義・向きなし) はキーを書かない
+            dp.acoustic().feedDrives = { AcousticOpts::FeedDrive{} };
+            check(dp.save(p6, &e6) && bytes6() == base6,
+                  "dir-ofdx: an omni default row stays byte-identical");
+
+            // 名前と向き (ゲイン・遅延は既定のまま) でも行を書く
+            AcousticOpts::FeedDrive cd;
+            cd.directivity = QStringLiteral("cardioid");
+            cd.hasAim = true;
+            cd.aim[0] = 0.0; cd.aim[1] = -1.0; cd.aim[2] = 0.5;
+            dp.acoustic().feedDrives = { cd };
+            check(dp.save(p6, &e6), "dir-ofdx: directional saved");
+            {
+                const QJsonArray rows = feeds6();
+                const QJsonObject o = rows.isEmpty() ? QJsonObject()
+                                                     : rows.at(0).toObject();
+                check(rows.size() == 1
+                      && o.value("directivity").toString() == "cardioid"
+                      && o.value("aim").toArray()
+                             == QJsonArray({ 0.0, -1.0, 0.5 })
+                      && o.value("gain").toDouble() == 1.0
+                      && o.value("delay_s").toDouble() == 0.0,
+                      "dir-ofdx: directivity and aim are written with the row");
+            }
+            ofd::Project rd6;
+            check(rd6.load(p6, &e6), "dir-ofdx: reloaded");
+            check(rd6.acoustic().feedDrives.size() == 1
+                  && rd6.acoustic().feedDrives[0].directivity.toString()
+                         == "cardioid"
+                  && rd6.acoustic().feedDrives[0].hasAim
+                  && rd6.acoustic().feedDrives[0].aim[1] == -1.0
+                  && rd6.acoustic().feedDrives[0].aim[2] == 0.5
+                  && rd6.acoustic().feedDrives[0].extra.isEmpty(),
+                  "dir-ofdx: name and aim round-trip");
+
+            // 無指向へ戻せば旧ファイルとバイト一致
+            rd6.acoustic().feedDrives[0].directivity =
+                QJsonValue(QJsonValue::Undefined);
+            rd6.acoustic().feedDrives[0].hasAim = false;
+            check(rd6.save(p6, &e6) && bytes6() == base6,
+                  "dir-ofdx: reverting to omni restores byte-identical output");
+
+            // 手書きのバンド別配列・数値・行の未知キーは保持して書き戻す
+            // (GUI で gain を変えても落とさない — 以前は {gain, delay_s} だけを
+            // 書き戻していたので、手書きの directivity が黙って消えていた)。
+            // 範囲外の a は契約の値域 0..1 へクランプして読む。
+            check(writeFeeds6(QJsonArray{
+                      QJsonObject{ {"gain", 1.0}, {"delay_s", 0.0},
+                                   {"directivity", QJsonArray{ 1.0, 0.5, -0.2 }},
+                                   {"aim", QJsonArray{ 1.0, 0.0, 0.0 }},
+                                   {"future_key", 7} },
+                      QJsonObject{ {"directivity", 1.5} },
+                      QJsonObject{ {"directivity", "shotgun"},
+                                   {"aim", QJsonArray{ 1.0, 0.0 }} } }),
+                  "dir-ofdx: hand-written rows");
+            ofd::Project hw;
+            check(hw.load(p6, &e6), "dir-ofdx: hand-written reload");
+            check(hw.acoustic().feedDrives.size() == 3
+                  && hw.acoustic().feedDrives[0].directivity
+                         == QJsonValue(QJsonArray{ 1.0, 0.5, 0.0 })
+                  && hw.acoustic().feedDrives[1].directivity.toDouble() == 1.0
+                  && hw.acoustic().feedDrives[2].directivity.toString()
+                         == "shotgun",
+                  "dir-ofdx: numbers clamp to 0..1, names stay as written");
+            check(!hw.acoustic().feedDrives[2].hasAim
+                  && hw.acoustic().feedDrives[2].extra.contains("aim"),
+                  "dir-ofdx: a malformed aim is kept raw for the solver to refuse");
+            hw.acoustic().feedDrives[0].gain = 0.5;   // GUI での編集
+            check(hw.save(p6, &e6), "dir-ofdx: edited hand-written saved");
+            {
+                const QJsonArray rows = feeds6();
+                const QJsonObject o0 = rows.size() > 0 ? rows.at(0).toObject()
+                                                       : QJsonObject();
+                const QJsonObject o2 = rows.size() > 2 ? rows.at(2).toObject()
+                                                       : QJsonObject();
+                check(rows.size() == 3 && o0.value("gain").toDouble() == 0.5
+                      && o0.value("directivity").toArray()
+                             == QJsonArray({ 1.0, 0.5, 0.0 })
+                      && o0.value("future_key").toInt() == 7
+                      && o0.value("aim").toArray() == QJsonArray({ 1.0, 0.0, 0.0 })
+                      && o2.value("directivity").toString() == "shotgun"
+                      && o2.value("aim").toArray() == QJsonArray({ 1.0, 0.0 }),
+                      "dir-ofdx: editing gain keeps the per-band array, aim "
+                      "and unknown row keys");
+            }
+            // isDirectional / 名前の判定 (プリフライトとソルバーの規則)
+            AcousticOpts::FeedDrive t;
+            check(!t.isDirectional() && t.aimIsZero(),
+                  "dir-ofdx: the default row is omni with no aim");
+            t.directivity = QStringLiteral("omni");
+            check(!t.isDirectional(), "dir-ofdx: \"omni\" is not directional");
+            t.directivity = 0.99;
+            check(t.isDirectional(), "dir-ofdx: a < 1 is directional");
+            check(AcousticOpts::FeedDrive::isKnownDirectivityName("figure8")
+                  && AcousticOpts::FeedDrive::isKnownDirectivityName("supercardioid")
+                  && !AcousticOpts::FeedDrive::isKnownDirectivityName("dipole"),
+                  "dir-ofdx: the known names match the solvers");
+        }
+
         // 旧ファイル (source_wav 無し) は既定値のまま
         ofd::Project old;
         check(old.acoustic().wavTrimStart_s == 0.0
@@ -5046,6 +5178,48 @@ static void testAcousticPreflight()
         p.feeds()[0].z = 3.0;
         check(acousticRunProblems(p).isEmpty(),
               "preflight: a source exactly on the boundary is accepted");
+    }
+
+    // 音源の指向性 (ADR-0014) : 無指向でない音源に向きが無い / 未知の名前は
+    // ソルバーが非零終了するので、起動前に feed 表を名指しして止める
+    {
+        Project p; makeRoom(p);
+        AcousticOpts::FeedDrive d;
+        d.directivity = QStringLiteral("cardioid");
+        p.acoustic().feedDrives = { d };
+        const QStringList bad = acousticRunProblems(p);
+        check(bad.size() == 1 && bad.first().contains(QStringLiteral("aim"))
+                  && bad.first().contains(QStringLiteral("音響ソルバ連携")),
+              "preflight: a directional feed without aim names the feed table");
+        p.acoustic().feedDrives[0].hasAim = true;
+        p.acoustic().feedDrives[0].aim[0] = 0.0;
+        check(acousticRunProblems(p).size() == 1,
+              "preflight: a zero aim vector counts as no aim");
+        p.acoustic().feedDrives[0].aim[2] = -1.0;
+        check(acousticRunProblems(p).isEmpty(),
+              "preflight: a directional feed with a non-zero aim is accepted");
+
+        Project q; makeRoom(q);
+        AcousticOpts::FeedDrive e;
+        e.directivity = QJsonArray{ 1.0, 1.0, 1.0, 1.0, 1.0, 0.0 };
+        q.acoustic().feedDrives = { e };
+        check(acousticRunProblems(q).size() == 1,
+              "preflight: a per-band array with one band below 1 needs an aim");
+        q.acoustic().feedDrives[0].directivity = QJsonArray{ 1.0, 1.0 };
+        check(acousticRunProblems(q).isEmpty(),
+              "preflight: an all-ones array is omni (no aim needed)");
+        q.acoustic().feedDrives[0].directivity = QStringLiteral("shotgun");
+        const QStringList nm = acousticRunProblems(q);
+        check(nm.size() == 1 && nm.first().contains(QStringLiteral("shotgun")),
+              "preflight: an unknown directivity name is reported by name");
+
+        // feed 行を超える手書きの行はソルバーが無視するので点検しない
+        Project r; makeRoom(r);
+        AcousticOpts::FeedDrive omni, extraRow;
+        extraRow.directivity = QStringLiteral("figure8");
+        r.acoustic().feedDrives = { omni, extraRow };
+        check(acousticRunProblems(r).isEmpty(),
+              "preflight: rows beyond the feed count are not checked");
     }
 
     // セル総数の上限 (OpenAcoustics と同じ 3,000 万)

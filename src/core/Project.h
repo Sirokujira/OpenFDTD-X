@@ -10,7 +10,9 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include "Domain.h"
 #include "Material.h"
 #include "Geometry.h"
@@ -556,9 +558,50 @@ struct AcousticOpts {
     // acoustic.sources を**音源一覧**として既に使っているため。あちらは
     // GUI が置いた音源、こちらは .ofd の feed 行で並びも意味も別物なので、
     // 名前を分けてある (混ぜるとソルバーが静かに誤読する)。
+    //
+    // 指向性 (ADR-0014): D(θ) = a + (1−a) cosθ (θ は aim からの角度、
+    // 軸上 D(0) = 1)。directivity はファイルの値をそのまま持つ — 名前
+    // (omni / subcardioid / cardioid / supercardioid / hypercardioid /
+    // figure8)、数値 a、またはバンド別の配列 (125 Hz〜4 kHz)。Undefined =
+    // キーを書かない = 無指向 (旧ファイルとバイト一致)。aim は向き (長さは
+    // 無関係 — ソルバーが正規化する)。hasAim = false ならキーを書かない。
+    // extra は行の他のキー (前方互換 — 理解しないキーもそのまま書き戻す)。
     struct FeedDrive {
         double gain = 1.0;      // 線形ゲイン (|gain| <= 1000)
         double delaySec = 0.0;  // 発火遅延 [s] (0 .. 1)
+        QJsonValue directivity = QJsonValue(QJsonValue::Undefined);
+        bool   hasAim = false;
+        double aim[3] = { 0.0, 0.0, 0.0 };
+        QJsonObject extra;
+        // 既定 (= 行として書く必要が無い) か
+        bool isDefault() const {
+            return gain == 1.0 && delaySec == 0.0 && directivity.isUndefined()
+                && !hasAim && extra.isEmpty();
+        }
+        // 無指向でない (どこかのバンドで a < 1、または omni 以外の名前) か。
+        // ソルバーはこのとき 0 でない aim を要求する (無ければ非零終了)。
+        bool isDirectional() const {
+            if (directivity.isString())
+                return directivity.toString() != QLatin1String("omni");
+            if (directivity.isDouble()) return directivity.toDouble() < 1.0;
+            if (directivity.isArray()) {
+                const QJsonArray arr = directivity.toArray();
+                for (const QJsonValue &v : arr)
+                    if (v.isDouble() && v.toDouble() < 1.0) return true;
+            }
+            return false;
+        }
+        bool aimIsZero() const {
+            return !hasAim || (aim[0] == 0.0 && aim[1] == 0.0 && aim[2] == 0.0);
+        }
+        // ソルバーが知っている指向性の名前か (ADR-0014 Decision 2)
+        static bool isKnownDirectivityName(const QString &n) {
+            return n == QLatin1String("omni") || n == QLatin1String("subcardioid")
+                || n == QLatin1String("cardioid")
+                || n == QLatin1String("supercardioid")
+                || n == QLatin1String("hypercardioid")
+                || n == QLatin1String("figure8");
+        }
     };
     QVector<FeedDrive> feedDrives;
 

@@ -10,6 +10,9 @@
 #include "../I18n.h"
 #include "TabHelpers.h"
 
+#include <QJsonArray>
+#include <QJsonDocument>
+
 #include <cmath>
 #include <QCheckBox>
 #include <QComboBox>
@@ -25,7 +28,9 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -242,24 +247,61 @@ const bool s_i18n = [] {
         "double-counts absorption at oblique angles). alpha above 0.951 is "
         "clamped to the locally reacting limit with a warning in solver.log "
         "(ADR-0011).");
-    I18n::reg("acs_feeds", "feed ごとのゲイン・遅延",
-              "Per-feed gain and delay");
+    I18n::reg("acs_feeds", "feed ごとのゲイン・遅延・指向性",
+              "Per-feed gain, delay and directivity");
     I18n::reg("acs_feeds_note",
         "既定 (ゲイン 1・遅延 0) のままなら .ofdx には何も書かない。"
         "変更すると acoustic.feeds を書き、両ソルバーが feed i を "
         "t = 遅延 に強度 ゲイン で発火する (ADR-0010 Decision 7)。"
         "複数音源がオフでも 1 行目は feed #1 に効く。負のゲインは極性反転。"
-        "計算時間は最大遅延のぶん自動延長される。",
+        "計算時間は最大遅延のぶん自動延長される。指向性と向きも同じ行に"
+        "書く (ADR-0014 — 無指向のままなら何も書かない)。",
         "Left at the defaults (gain 1, delay 0) nothing is written to the "
         ".ofdx. Edited, it writes acoustic.feeds and both solvers fire feed i "
         "at t = delay with the given gain (ADR-0010 Decision 7). Row 1 "
         "applies to feed #1 even when multi-source is off. A negative gain "
         "inverts polarity. The solve duration is extended by the largest "
-        "delay.");
+        "delay. Directivity and aim go in the same row (ADR-0014 — nothing "
+        "is written while omni).");
     I18n::reg("acs_feeds_col_no", "feed", "Feed");
     I18n::reg("acs_feeds_col_pos", "位置 [m]", "Position [m]");
     I18n::reg("acs_feeds_col_gain", "ゲイン", "Gain");
     I18n::reg("acs_feeds_col_delay", "遅延 [ms]", "Delay [ms]");
+    I18n::reg("acs_feeds_col_dir", "指向性", "Directivity");
+    I18n::reg("acs_feeds_col_aim", "向き (aim) x, y, z", "Aim x, y, z");
+    I18n::reg("acs_dir_omni", "無指向", "Omni");
+    I18n::reg("acs_dir_subcardioid", "サブカーディオイド (a 0.7)",
+              "Subcardioid (a 0.7)");
+    I18n::reg("acs_dir_cardioid", "カーディオイド (a 0.5)", "Cardioid (a 0.5)");
+    I18n::reg("acs_dir_supercardioid", "スーパーカーディオイド (a 0.366)",
+              "Supercardioid (a 0.366)");
+    I18n::reg("acs_dir_hypercardioid", "ハイパーカーディオイド (a 0.25)",
+              "Hypercardioid (a 0.25)");
+    I18n::reg("acs_dir_figure8", "8 の字 (a 0)", "Figure-8 (a 0)");
+    I18n::reg("acs_dir_custom", "ファイルの値", "Value from file");
+    I18n::reg("acs_dir_note",
+        "音源の指向性 D(θ) = a + (1−a) cosθ (θ は向きからの角度、軸上の音圧は"
+        "無指向と同じ — ADR-0014)。両ソルバーが同じ意味で読む (FDTD は単極 + "
+        "力の双極子、幾何音響はバンド別に直接音・鏡像・レイへ)。背面ローブ "
+        "(a < 0.5) は極性が反転する。「ファイルの値」は .ofdx に手書きされた "
+        "数値・バンド別の配列で、別の項目を選ぶまでそのまま書き戻す。"
+        "音源リストの種類・向きはここへは反映されない (位置のみ)。",
+        "Source directivity D(θ) = a + (1−a) cosθ (θ from the aim; the "
+        "on-axis pressure equals the omni source — ADR-0014). Both solvers read "
+        "it the same way (FDTD: monopole + force dipole; geometric: per band on "
+        "the direct sound, images and rays). Rear lobes (a < 0.5) invert "
+        "polarity. “Value from file” is a hand-written number or per-band "
+        "array in the .ofdx, written back unchanged until another item is "
+        "chosen. The source list's kind/aim is not transferred here "
+        "(positions only).");
+    I18n::reg("acs_aim_note",
+        "音源が向く方向 [x, y, z] (長さは無関係 — ソルバーが正規化する)。"
+        "無指向以外では 0 でない向きが必要 (無いとソルバーが非零終了する)。"
+        "無指向から切り替えたとき向きが 0 なら +X を入れる。",
+        "Direction the source faces [x, y, z] (length does not matter — the "
+        "solvers normalise it). Required (non-zero) unless omni; otherwise the "
+        "solvers exit with an error. Switching from omni with a zero aim fills "
+        "in +X.");
     I18n::reg("acs_feeds_none",
               "(.ofd に feed 行がありません)", "(no feed lines in the .ofd)");
     I18n::reg("acs_obs", "障害物の材質 (acoustic.obstacles)",
@@ -443,6 +485,60 @@ AcousticRunConfig configFrom(const OperaAcousticSettings &s)
     return cfg;
 }
 
+
+// ── 音源の指向性 (ADR-0014) の選択肢 ──
+// a はソルバー (OpenAcoustics の AC_DIR_* / GA_DIR_*) と同じ値。
+// 名前で書くので GUI とソルバーの値がずれても .ofdx の意味は変わらない。
+struct DirPreset { const char *name; double a; const char *key; };
+const DirPreset kDirPresets[] = {
+    { "omni",          1.0,                 "acs_dir_omni" },
+    { "subcardioid",   0.7,                 "acs_dir_subcardioid" },
+    { "cardioid",      0.5,                 "acs_dir_cardioid" },
+    { "supercardioid", 0.36602540378443865, "acs_dir_supercardioid" },
+    { "hypercardioid", 0.25,                "acs_dir_hypercardioid" },
+    { "figure8",       0.0,                 "acs_dir_figure8" },
+};
+constexpr int kDirPresetCount = int(sizeof(kDirPresets) / sizeof(kDirPresets[0]));
+constexpr int kDirCustom = kDirPresetCount;   // 「ファイルの値」
+
+// .ofdx の directivity 値 → コンボの項目。未指定は無指向、名前・数値・
+// 全バンド同値の配列は一致する項目、それ以外 (バンド別の配列・未知の名前・
+// プリセットに無い数値) は「ファイルの値」。
+int dirPresetIndex(const QJsonValue &v)
+{
+    if (v.isUndefined() || v.isNull()) return 0;
+    if (v.isString()) {
+        for (int i = 0; i < kDirPresetCount; ++i)
+            if (v.toString() == QLatin1String(kDirPresets[i].name)) return i;
+        return kDirCustom;
+    }
+    double a = -1.0;
+    if (v.isDouble()) {
+        a = v.toDouble();
+    } else if (v.isArray()) {
+        const QJsonArray arr = v.toArray();
+        if (arr.isEmpty() || !arr.at(0).isDouble()) return kDirCustom;
+        a = arr.at(0).toDouble();
+        for (const QJsonValue &e : arr)
+            if (!e.isDouble() || e.toDouble() != a) return kDirCustom;
+    } else {
+        return kDirCustom;
+    }
+    for (int i = 0; i < kDirPresetCount; ++i)
+        if (a == kDirPresets[i].a) return i;
+    return kDirCustom;
+}
+
+// 「ファイルの値」の表示用テキスト (数値・配列・名前をそのまま)
+QString dirValueText(const QJsonValue &v)
+{
+    if (v.isString()) return v.toString();
+    if (v.isDouble()) return QString::number(v.toDouble(), 'g', 10);
+    if (v.isArray())
+        return QString::fromUtf8(
+            QJsonDocument(v.toArray()).toJson(QJsonDocument::Compact));
+    return QString();
+}
 } // namespace
 
 // ── construction ────────────────────────────────────────────────────────────
@@ -533,10 +629,13 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
         auto *fl = new QLabel(I18n::tr("acs_feeds"), m_extGroup);
         fl->setToolTip(I18n::tr("acs_feeds_note"));
         ev->addWidget(fl);
-        m_feedTable = new QTableWidget(0, 4, m_extGroup);
+        m_feedTable = new QTableWidget(0, 6, m_extGroup);
         m_feedTable->setHorizontalHeaderLabels(
             { I18n::tr("acs_feeds_col_no"), I18n::tr("acs_feeds_col_pos"),
-              I18n::tr("acs_feeds_col_gain"), I18n::tr("acs_feeds_col_delay") });
+              I18n::tr("acs_feeds_col_gain"), I18n::tr("acs_feeds_col_delay"),
+              I18n::tr("acs_feeds_col_dir"), I18n::tr("acs_feeds_col_aim") });
+        m_feedTable->horizontalHeaderItem(4)->setToolTip(I18n::tr("acs_dir_note"));
+        m_feedTable->horizontalHeaderItem(5)->setToolTip(I18n::tr("acs_aim_note"));
         m_feedTable->horizontalHeader()->setSectionResizeMode(
             QHeaderView::Stretch);
         m_feedTable->verticalHeader()->setVisible(false);
@@ -898,14 +997,50 @@ void AcousticSolverTab::apply()
         QVector<AcousticOpts::FeedDrive> fd = m_p->acoustic().feedDrives;
         const int rows = m_feedTable->rowCount();
         if (fd.size() < rows) fd.resize(rows);
+        auto moved = [](double w, double m, int dec) {
+            return std::abs(w - m) > 0.5 * std::pow(10.0, -dec);
+        };
         for (int r = 0; r < rows; ++r) {
             auto *g = qobject_cast<QDoubleSpinBox *>(
                 m_feedTable->cellWidget(r, 2));
             auto *d = qobject_cast<QDoubleSpinBox *>(
                 m_feedTable->cellWidget(r, 3));
             if (!g || !d) continue;
-            fd[r].gain = g->value();
-            fd[r].delaySec = d->value() / 1000.0;   // 表は ms、契約は s
+            // 表示の丸め以上に動いたときだけ反映 (refresh が表示した丸め値を
+            // 書き戻して手書きの細かい値を潰さないため — GA 設定と同じ規則)
+            if (moved(g->value(), fd[r].gain, g->decimals()))
+                fd[r].gain = g->value();
+            if (moved(d->value(), fd[r].delaySec * 1000.0, d->decimals()))
+                fd[r].delaySec = d->value() / 1000.0;   // 表は ms、契約は s
+            // 指向性 (ADR-0014) : 利用者が項目を変えたときだけ書き換える
+            // (refresh が表示した項目を書き戻して、手書きの数値・配列を
+            // 名前に置き換えないため)。無指向はキーを消す (= 旧ファイルと
+            // バイト一致)。「ファイルの値」は選べない (表示専用)。
+            if (auto *dc = qobject_cast<QComboBox *>(m_feedTable->cellWidget(r, 4))) {
+                const int want = dc->currentIndex();
+                if (want != dirPresetIndex(fd[r].directivity) && want >= 0
+                    && want < kDirCustom)
+                    fd[r].directivity = (want == 0)
+                        ? QJsonValue(QJsonValue::Undefined)
+                        : QJsonValue(QString::fromLatin1(kDirPresets[want].name));
+            }
+            // 向き : 表示の丸め以上に動いた成分があるときだけ反映。全成分 0 は
+            // 「向きなし」(キーを書かない)。
+            if (QWidget *aw = m_feedTable->cellWidget(r, 5)) {
+                double v[3];
+                bool any = false;
+                for (int c = 0; c < 3; ++c) {
+                    auto *sp = aw->findChild<QDoubleSpinBox *>(
+                        QStringLiteral("aim%1").arg(c));
+                    const double m = fd[r].hasAim ? fd[r].aim[c] : 0.0;
+                    v[c] = sp ? sp->value() : m;
+                    if (sp && moved(v[c], m, sp->decimals())) any = true;
+                }
+                if (any) {
+                    for (int c = 0; c < 3; ++c) fd[r].aim[c] = v[c];
+                    fd[r].hasAim = (v[0] != 0.0 || v[1] != 0.0 || v[2] != 0.0);
+                }
+            }
         }
         m_p->acoustic().feedDrives = fd;
     }
@@ -1100,6 +1235,80 @@ void AcousticSolverTab::refreshFeedTable()
         }
         gain->setValue(drv.gain);
         delay->setValue(drv.delaySec * 1000.0);
+
+        // 指向性 (ADR-0014) と向き。手書きの数値・配列は「ファイルの値」と
+        // して表示し、利用者が別の項目を選ぶまで apply() は触らない。
+        QWidget *aimW = m_feedTable->cellWidget(r, 5);
+        if (!aimW) {
+            aimW = new QWidget(m_feedTable);
+            auto *hl = new QHBoxLayout(aimW);
+            hl->setContentsMargins(0, 0, 0, 0);
+            hl->setSpacing(2);
+            for (int c = 0; c < 3; ++c) {
+                auto *sp = new QDoubleSpinBox(aimW);
+                sp->setObjectName(QStringLiteral("aim%1").arg(c));
+                sp->setRange(-1000.0, 1000.0);   // 長さは無関係 (正規化される)
+                sp->setDecimals(3);
+                sp->setSingleStep(0.1);
+                sp->setToolTip(I18n::tr("acs_aim_note"));
+                hl->addWidget(sp);
+                connect(sp, &QDoubleSpinBox::valueChanged, this,
+                        [this](double) { apply(); });
+            }
+            m_feedTable->setCellWidget(r, 5, aimW);
+        }
+        auto *dir = qobject_cast<QComboBox *>(m_feedTable->cellWidget(r, 4));
+        if (!dir) {
+            dir = new QComboBox(m_feedTable);
+            for (int i = 0; i < kDirPresetCount; ++i)
+                dir->addItem(I18n::tr(kDirPresets[i].key));
+            dir->addItem(I18n::tr("acs_dir_custom"));
+            dir->setToolTip(I18n::tr("acs_dir_note"));
+            m_feedTable->setCellWidget(r, 4, dir);
+            connect(dir, &QComboBox::currentIndexChanged, this,
+                    [this, aimW](int idx) {
+                if (m_updating) return;
+                QDoubleSpinBox *sp[3];
+                bool zero = true;
+                for (int c = 0; c < 3; ++c) {
+                    sp[c] = aimW->findChild<QDoubleSpinBox *>(
+                        QStringLiteral("aim%1").arg(c));
+                    if (sp[c] && sp[c]->value() != 0.0) zero = false;
+                }
+                // 無指向へ戻したら向きも消す (行が既定に戻り、旧ファイルと
+                // バイト一致)。無指向から切り替えて向きが 0 なら +X を入れる
+                // (向きの無い指向性はソルバーが非零終了するため — 見える
+                // 形で入れるので利用者がすぐ直せる)。
+                for (int c = 0; c < 3; ++c) {
+                    if (!sp[c]) continue;
+                    const QSignalBlocker block(sp[c]);
+                    if (idx == 0) sp[c]->setValue(0.0);
+                    else if (zero && idx < kDirCustom)
+                        sp[c]->setValue(c == 0 ? 1.0 : 0.0);
+                }
+                aimW->setEnabled(idx != 0);
+                apply();
+            });
+        }
+        {
+            const int di = dirPresetIndex(drv.directivity);
+            if (auto *im = qobject_cast<QStandardItemModel *>(dir->model()))
+                if (QStandardItem *it = im->item(kDirCustom))
+                    it->setEnabled(di == kDirCustom);   // 選べない (表示専用)
+            const QSignalBlocker block(dir);
+            dir->setCurrentIndex(di);
+            dir->setToolTip(di == kDirCustom
+                ? I18n::tr("acs_dir_note") + QStringLiteral("\n\n")
+                      + dirValueText(drv.directivity)
+                : I18n::tr("acs_dir_note"));
+            for (int c = 0; c < 3; ++c)
+                if (auto *sp = aimW->findChild<QDoubleSpinBox *>(
+                        QStringLiteral("aim%1").arg(c))) {
+                    const QSignalBlocker b2(sp);
+                    sp->setValue(drv.hasAim ? drv.aim[c] : 0.0);
+                }
+            aimW->setEnabled(di != 0 || drv.hasAim);
+        }
     }
     // feed が無い .ofd では表の代わりに理由を出す (空表を放置しない)
     m_feedTable->setVisible(rows > 0);
