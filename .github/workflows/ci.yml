@@ -181,12 +181,72 @@ jobs:
       - name: Build (Release)
         run: cmake --build build --config Release
 
+      # ── MPI 経路の統合テスト (Windows) ─────────────────────────────────────
+      # ctest の kernel.runner_mpi (GUI の Runner が mpiexec を起動して完走し、
+      # 結果が CPU 実行と一致すること) は Linux でしか走っていなかった。Windows
+      # 固有の経路 — MS-MPI の場所の探索 (MSMPI_BIN) と、ofd_mpi.exe が
+      # msmpi.dll を見つけられるよう Runner が子プロセスの PATH にランチャの
+      # ディレクトリを足す処理 — は実際に壊れたことがある (DLL が見つからず
+      # 0xC0000135 で無言のまま落ちた) のに、CI では一度も実行されていなかった。
+      #
+      # MS-MPI は公式インストーラではなく conda-forge の同じバイナリを展開する
+      # (tools/update-and-build.ps1 -SetupMpi と同じ方法・同じ版。手元で
+      # mpiexec -n 2 ofd_mpi が通ることを確認済み)。**PATH には足さず、公式
+      # インストーラも設定する MSMPI_BIN だけを設定する** — PATH にあると
+      # msmpi.dll も PATH で見つかってしまい、Runner の PATH 補完が壊れても
+      # 気付けない。MSMPI_INC / MSMPI_LIB64 は ofd_mpi のビルド (FindMPI) 用。
+      - name: Install MS-MPI (portable, not on PATH)
+        run: |
+          $dest = "$env:RUNNER_TEMP\msmpi"
+          $tbz  = "$env:RUNNER_TEMP\msmpi.tar.bz2"
+          Invoke-WebRequest -UseBasicParsing -OutFile $tbz `
+            -Uri https://conda.anaconda.org/conda-forge/win-64/msmpi-10.1.1-h3502643_7.tar.bz2
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          # Windows 同梱の bsdtar を絶対パスで (Git の GNU tar は C:\ を
+          # リモートホストと解釈して失敗する)
+          & "$env:SystemRoot\System32\tar.exe" -xf $tbz -C $dest
+          if (-not (Test-Path "$dest\Library\bin\mpiexec.exe")) { throw "mpiexec.exe missing" }
+          if (-not (Test-Path "$dest\Library\bin\msmpi.dll"))   { throw "msmpi.dll missing" }
+          Add-Content -Path $env:GITHUB_ENV -Value "MSMPI_BIN=$dest\Library\bin"
+          Add-Content -Path $env:GITHUB_ENV -Value "MSMPI_INC=$dest\Library\include"
+          Add-Content -Path $env:GITHUB_ENV -Value "MSMPI_LIB64=$dest\Library\lib"
+
+      # カーネルは Ninja でビルドする (OpenFDTD 自身の Windows CI と同じ構成)。
+      # GUI のビルドは済んでいるので、ここから先で MSVC の環境を読み込んでも
+      # GUI 側には影響しない。
+      - name: Set up MSVC environment (kernel build)
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # 基幹カーネル OpenFDTD の CPU 版と MPI 版。どちらも <repo>\bin に入るので、
+      # OFDX_OFD_BIN を渡すと selftest の ofd 統合と ctest の kernel.runner_mpi が
+      # 走る。msmpi.dll は ofd_mpi.exe の隣へコピーしない (Runner の PATH 補完を
+      # 検査するため)。
+      - name: Build OpenFDTD kernel (CPU + MPI)
+        run: |
+          $src = "$env:RUNNER_TEMP\OpenFDTD"
+          git clone --depth 1 https://github.com/Sirokujira/OpenFDTD.git $src
+          $tc = "$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+          foreach ($mpi in "OFF", "ON") {
+            $b = "$src\build-mpi-$mpi"
+            cmake -S $src -B $b -G Ninja -DCMAKE_BUILD_TYPE=Release `
+              -DWITH_CUDA=OFF "-DWITH_MPI=$mpi" `
+              "-DCMAKE_TOOLCHAIN_FILE=$tc" -DVCPKG_TARGET_TRIPLET=x64-windows-static-md
+            if ($LASTEXITCODE -ne 0) { throw "configure failed (WITH_MPI=$mpi)" }
+            cmake --build $b
+            if ($LASTEXITCODE -ne 0) { throw "build failed (WITH_MPI=$mpi)" }
+          }
+          if (-not (Test-Path "$src\bin\ofd.exe"))     { throw "ofd.exe missing" }
+          if (-not (Test-Path "$src\bin\ofd_mpi.exe")) { throw "ofd_mpi.exe missing" }
+          if (Test-Path "$src\bin\msmpi.dll") { throw "msmpi.dll must not sit next to ofd_mpi.exe here" }
+          Add-Content -Path $env:GITHUB_ENV -Value "OFDX_OFD_BIN=$src\bin\ofd.exe"
+
       - name: Self test
         run: build/Release/ofdx_selftest.exe
         shell: bash
 
       # Linux と同様: CTest 登録済みの acoustics.* を実行する
       # (acoustics.c_api は C99 としてコンパイルされた純 C テスト)。
+      # OFDX_OFD_BIN (上の手順で GITHUB_ENV に入る) があるので kernel.runner_mpi も走る。
       # TMPDIR は test_wav の一時 wav 出力先 (既定 /tmp は Windows に無い)。
       - name: Acoustics tests (ctest)
         run: ctest --test-dir build -C Release --output-on-failure
