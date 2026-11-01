@@ -297,22 +297,58 @@ void I18n::loadTables() {
     add("opt_rcwa_eps2", "ε2", "ε2");
     add("opt_rcwa_fill", "フィル率 f", "Fill factor f");
     add("opt_rcwa_thick", "厚み [nm]", "Thickness [nm]");
+    add("opt_rcwa_eps1i", "ε1''", "ε1''");
+    add("opt_rcwa_eps2i", "ε2''", "ε2''");
+    add("opt_rcwa_filly", "fy", "fy");   // y 方向のフィル率 (列幅が狭いので記号のみ)
+    add("opt_rcwa_2d", "2D 格子 (Ny / Λy を使う)", "2-D grating (use Ny / Λy)");
     add("opt_rcwa_add", "層を追加", "Add layer");
     add("opt_rcwa_del", "選択層を削除", "Remove selected layer");
     add("opt_rcwa_stack_hint",
         "先頭と末尾は半無限層として扱われ、厚みは無視されます (0 で可)。"
-        "orcwa は 1D 格子ソルバーのため Nx と Λx のみを使い、Ny / Λy は "
-        "無視されます。周波数は全般タブの frequency1 [Hz] を使います "
-        "(λ [nm] → f = c/λ)。カーネルは 0 < f < 1 と中間層の厚み > 0 を"
-        "要求します。",
+        "各層は 1 周期内で ε1 が矩形 [0, f·Λx] × [0, fy·Λy] を占め、残りが ε2 "
+        "です (fy = 1 なら y 方向に一様な 1D 線格子)。ε'' は損失 (正の値)。"
+        "1D 格子では Nx と Λx だけを使います。「2D 格子」をオンにするか、"
+        "fy < 1 の層があると Ny / Λy も orcwa に渡します (計算量は次数の積に"
+        "比例して増えます)。周波数は全般タブの frequency1 [Hz] を使います "
+        "(λ [nm] → f = c/λ)。カーネルは中間層の厚み > 0 を要求します。",
         "The first and last layers are semi-infinite; their thickness is "
-        "ignored (0 is fine). orcwa is a 1-D grating solver, so only Nx and "
-        "Λx are used — Ny / Λy are ignored. Frequencies come from "
-        "frequency1 [Hz] on the General tab (λ [nm] → f = c/λ). The kernel "
-        "requires 0 < f < 1 and a positive thickness for interior layers.");
+        "ignored (0 is fine). In each period ε1 fills the rectangle "
+        "[0, f·Λx] × [0, fy·Λy] and ε2 the rest (fy = 1 is a 1-D line "
+        "grating, uniform in y). ε'' is the loss (positive). A 1-D grating "
+        "uses Nx and Λx only; turning on \"2-D grating\", or any layer with "
+        "fy < 1, also passes Ny / Λy to orcwa (the cost grows with the "
+        "product of the orders). Frequencies come from frequency1 [Hz] on the "
+        "General tab (λ [nm] → f = c/λ). The kernel requires a positive "
+        "thickness for interior layers.");
     add("opt_rcwa_warn_layer",
-        "層 %1: ε1 > 0, ε2 > 0, 0 ≤ f ≤ 1, 厚み ≥ 0 を満たしていません。",
-        "Layer %1: needs ε1 > 0, ε2 > 0, 0 ≤ f ≤ 1, thickness ≥ 0.");
+        "層 %1: ε > 0 (ε'' > 0 なら負の ε も可), ε'' ≥ 0, 0 ≤ f ≤ 1, "
+        "0 ≤ fy ≤ 1, 厚み ≥ 0 を満たしていません。",
+        "Layer %1: needs ε > 0 (negative ε allowed when ε'' > 0), ε'' ≥ 0, "
+        "0 ≤ f ≤ 1, 0 ≤ fy ≤ 1, thickness ≥ 0.");
+    add("opt_rcwa_warn_2d",
+        "fy < 1 の層があるため 2D 格子として書き出します (Ny / Λy を使います)。",
+        "A layer has fy < 1, so the stack is written as a 2-D grating "
+        "(Ny / Λy are used).");
+    add("opt_rcwa_disp", "分散材料 (Lorentz 極)", "Dispersive materials (Lorentz poles)");
+    add("opt_rcwa_pole_layer", "層", "Layer");
+    add("opt_rcwa_pole_side", "材質 (1=ε1, 2=ε2)", "Material (1=ε1, 2=ε2)");
+    add("opt_rcwa_pole_add", "極を追加", "Add pole");
+    add("opt_rcwa_pole_del", "選択極を削除", "Remove selected pole");
+    add("opt_rcwa_disp_hint",
+        "ε(ω) = ε∞ + Σ ae² / (ce² − ω² − i·be·ω)  [ω, ae, be, ce: rad/s]。"
+        "層は層構成の行番号 (1 始まり)。同じ層・材質の極は加算され、ε∞ は最後の"
+        "極の値を使います。極を与えた材質では層構成の ε / ε'' は使われません。"
+        "Drude 金属は ae = プラズマ周波数 ωp, be = 衝突周波数 γ, ce = 0。"
+        "be > 0 が損失です。",
+        "ε(ω) = ε∞ + Σ ae² / (ce² − ω² − i·be·ω)  [ω, ae, be, ce: rad/s]. "
+        "Layer is the row number in the layer stack (1-based). Poles on the "
+        "same layer and material add up; ε∞ is taken from the last pole. A "
+        "material with poles ignores its ε / ε'' in the layer stack. A Drude "
+        "metal is ae = plasma frequency ωp, be = collision rate γ, ce = 0. "
+        "be > 0 is loss.");
+    add("opt_rcwa_warn_pole",
+        "極 %1: 層 1..%2, 材質 1 / 2, be ≥ 0, ce ≥ 0 を満たしていません。",
+        "Pole %1: needs layer 1..%2, material 1 / 2, be ≥ 0, ce ≥ 0.");
     add("opt_rcwa_warn_skip",
         "不正な層があるため、RCWA 設定 (rcwa / rcwalayer) は .ofd に"
         "書き出されません。",

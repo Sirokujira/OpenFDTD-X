@@ -6,8 +6,9 @@
 # MPI 版 (ofd_mpi) を使う ctest の kernel.runner_mpi (Runner が mpiexec を
 # 起動して完走し、結果が CPU 実行と一致すること) を回す。
 # 水中 (bellhopcxx) も Linux ジョブでビルドし、GUI が書いた .env を実カーネルで
-# 走らせる統合スモーク (OFDX_BELLHOP_BIN) を回す。光 (orcwa/obpm) は
-# オプションカーネルで CI 対象外 (GUI 側の分岐は selftest が担保する)。
+# 走らせる統合スモーク (OFDX_BELLHOP_BIN) を回す。光の RCWA カーネル (orcwa) も
+# Linux ジョブでビルドし、GUI が書いた RCWA 設定 (2D 格子・損失・分散) を実カーネルで
+# 解く統合スモーク (OFDX_ORCWA_BIN) を回す。obpm はオプションカーネルで CI 対象外。
 # 3 OS とも USE_HDF5=ON でビルドする (HDF5 の読み書きは結果表示の必須経路で、
 # OFF のジョブでは io/H5Reader・io/H5Writer のテストが丸ごと skip されるため)。
 name: CI
@@ -75,11 +76,27 @@ jobs:
           cmake --build /tmp/bellhopcuda/build -j"$(nproc)" --target bellhopcxx
           test -x /tmp/bellhopcuda/bin/bellhopcxx
 
+      # 光 RCWA (orcwa) の統合スモーク。GUI の io/OfdIO が書いた rcwa / rcwalayer /
+      # rcwadispersion を実カーネルで解き、2D 正方形柱の TE = TM・R + T = 1・
+      # 回折次数の和 = 合計、Drude 薄膜の吸収を selftest が見る。キー書式は
+      # カーネル (OpenRCWA/sol/input_data.c) が正なので、書式の取り違えはここで出る。
+      # FDTD 部分は不要なので orcwa ターゲットだけをビルドする。
+      - name: Build OpenRCWA orcwa (optical RCWA integration smoke)
+        run: |
+          sudo apt-get install -y libeigen3-dev liblapacke-dev
+          git clone --depth 1 https://github.com/Sirokujira/OpenRCWA.git /tmp/OpenRCWA
+          cmake -S /tmp/OpenRCWA -B /tmp/OpenRCWA/build \
+            -DCMAKE_BUILD_TYPE=Release -DWITH_CUDA=OFF -DWITH_MPI=OFF \
+            -DWITH_RCWA=OFF -DWITH_DATALIB=OFF
+          cmake --build /tmp/OpenRCWA/build -j"$(nproc)" --target orcwa
+          test -x /tmp/OpenRCWA/bin/orcwa
+
       - name: Self test (.ofd round-trip + voxelizer + glass + room acoustics)
         run: ./build/ofdx_selftest
         env:
           OFDX_OFD_BIN: /tmp/OpenFDTD/bin/ofd
           OFDX_BELLHOP_BIN: /tmp/bellhopcuda/bin/bellhopcxx
+          OFDX_ORCWA_BIN: /tmp/OpenRCWA/bin/orcwa
 
       # 音響コア (C++14) は上の Build ステップに含まれる。ここでは CTest に
       # 登録された acoustics.* テストを実行する。合成 RIR による残響指標の

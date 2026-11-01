@@ -296,6 +296,15 @@ const bool s_i18n = [] {
     I18n::reg("psol_cmp_energy",
               "エネルギー保存の検算: %1 の |R+T−1| の最大は %2 (%3 THz)。",
               "Energy balance: the largest |R+T-1| for %1 is %2 (at %3 THz).");
+    I18n::reg("psol_cmp_orders",
+              "%1 の回折次数: 伝搬次数 %2 行、0 次以外で最大は (%3, %4) 次の "
+              "%5 = %6 (%7 THz)。次数の和と合計のずれ %8。",
+              "%1 diffraction orders: %2 propagating rows; the strongest "
+              "non-zero order is (%3, %4) with %5 = %6 (at %7 THz). Orders "
+              "versus totals: %8.");
+    I18n::reg("psol_cmp_orders_zero",
+              "%1 の回折次数: 0 次だけが伝搬しています (%2 行)。",
+              "%1 diffraction orders: only the zero order propagates (%2 rows).");
     I18n::reg("psol_cmp_energy_ng",
               "無損失なら R+T=1 のはずなので、これは大きすぎます "
               "(次数の打ち切りか層の設定を見直してください)。",
@@ -1179,6 +1188,27 @@ void PhotonicsSolversTab::compareCrossResults()
                            .arg(g.eff.worstEnergyFreqHz() / 1e12, 0, 'f', 3);
         if (err > 3.0e-3) line += QStringLiteral(" ") + I18n::tr("psol_cmp_energy_ng");
         msg << line;
+    }
+    // 回折次数ごとの効率 (rcwa_orders.csv。古いカーネルは出さないので無ければ黙る)
+    for (const Got &g : got) {
+        const QString path = m_crossDir + QLatin1Char('/') + g.name.toLower()
+                           + QStringLiteral("/rcwa_orders.csv");
+        const rcwa::Orders ord = rcwa::readOrders(path);
+        if (!ord.valid()) continue;
+        rcwa::OrderPoint best;
+        if (ord.strongestNonSpecular(&best)) {
+            const bool refl = best.r >= best.t;
+            msg << I18n::tr("psol_cmp_orders")
+                       .arg(g.name).arg(ord.points.size())
+                       .arg(best.m).arg(best.n)
+                       .arg(QStringLiteral("%1_%2").arg(refl ? "R" : "T")
+                                                   .arg(best.te ? "TE" : "TM"))
+                       .arg(refl ? best.r : best.t, 0, 'g', 4)
+                       .arg(best.freqHz / 1e12, 0, 'f', 3)
+                       .arg(ord.worstSumError(g.eff), 0, 'g', 3);
+        } else {
+            msg << I18n::tr("psol_cmp_orders_zero").arg(g.name).arg(ord.points.size());
+        }
     }
 
     // 2 本そろっていれば R_TE を共通の周波数軸で突き合わせる

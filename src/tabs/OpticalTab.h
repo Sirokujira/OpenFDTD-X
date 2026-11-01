@@ -60,6 +60,9 @@ private:
     //  丸ごと出力しないので、カーネルには不正な設定が渡らない)。
     QStringList applyRcwaTable();
     void        refreshRcwaTable();
+    // 分散極テーブル ↔ モデル (rcwadispersion 行)。戻り値は警告文。
+    QStringList applyRcwaPoles();
+    void        refreshRcwaPoles();
     void        refreshOpticalSystem();  // 面データ表 (レンズエディタと共有)
     void        updateGeoMethodView();   // 解法 → 波動ソルバー設定の有効・無効
     // Raycast 節の設定で非順次レイトレースを実行し、結果を要約する
@@ -86,8 +89,11 @@ private:
     // RCWA
     QSpinBox  *m_rcwaNx, *m_rcwaNy, *m_rcwaLayers;
     QLineEdit *m_rcwaPx, *m_rcwaPy;
-    QTableWidget *m_rcwaStack;      // eps1 / eps2 / fill / 厚み[nm]
+    QCheckBox    *m_rcwa2d;         // 2D 格子 (Ny / Λy を orcwa へ渡す)
+    QTableWidget *m_rcwaStack;      // eps1 / eps2 / fill / 厚み[nm] / eps1'' / eps2'' / fill_y
     QPushButton  *m_rcwaAdd, *m_rcwaDel;
+    QTableWidget *m_rcwaPoles;      // 分散極: 層 / 材質 / ε∞ / ae / be / ce
+    QPushButton  *m_rcwaPoleAdd, *m_rcwaPoleDel;
     QLabel       *m_rcwaWarn;
     // BPM
     QComboBox *m_bpmAlgo, *m_bpmInput;

@@ -1087,7 +1087,7 @@ void MainWindow::onProjectChanged()
         const QString sig = QStringLiteral("%1:%2:%3")
             .arg(int(m_project->activeDomain()))
             .arg(int(oo.solver))
-            .arg(isValidRcwaStack(oo.rcwaLayerList) ? 1 : 0);
+            .arg(isValidRcwaConfig(oo.rcwaLayerList, oo.rcwaPoles) ? 1 : 0);
         if (sig != m_engineSig) {
             m_engineSig = sig;
             updateEngineItems(m_project->activeDomain());
@@ -1396,7 +1396,7 @@ void MainWindow::runSimulation()
         const OpticalOpts &oo = m_project->optical();
         if ((oo.solver == OpticalSolver::RCWA ||
              oo.solver == OpticalSolver::FMM) &&
-            !isValidRcwaStack(oo.rcwaLayerList)) {
+            !isValidRcwaConfig(oo.rcwaLayerList, oo.rcwaPoles)) {
             QMessageBox::warning(this, I18n::tr("tb_calc"),
                                  I18n::tr("run_rcwa_stack_err"));
             return;
