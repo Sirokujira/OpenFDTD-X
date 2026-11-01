@@ -41,7 +41,8 @@ jobs:
         run: cmake --build build -j"$(nproc)"
 
       # 基幹カーネル OpenFDTD を実ビルドし、selftest の統合スモークに渡す
-      # (GUI → subprocess 連携の回帰検出。光/水中カーネルはオプションのため対象外)
+      # (GUI → subprocess 連携の回帰検出。水中・光 RCWA・回路のカーネルも後続の
+      # 手順でビルドして統合スモークに渡す — 対象外は obpm だけ)
       # CPU 版に加えて MPI 版もビルドする。両方 /tmp/OpenFDTD/bin に入るので、
       # ctest の kernel.runner_mpi (GUI の Runner が mpiexec を起動して
       # 完走し、結果が CPU 実行と一致することを見る統合テスト) が走るようになる。
