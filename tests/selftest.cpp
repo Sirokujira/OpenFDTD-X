@@ -6234,6 +6234,120 @@ static void testOpticsMaterials()
 //   - 四分の一波長積層 (HL)^N H は Y = (nH/nL)^{2N}·nH²/ns の閉形式
 //   - 全反射条件で R = 1, T = 0
 //   - 無損失系で R + T = 1 (エネルギー保存)
+static void testThinFilmField()
+{
+    using namespace ofd::optics;
+    g_file = "thinfilm-field";
+    const double kPi = 3.14159265358979323846;
+    auto regionPts = [](const FieldProfile &f, int region) {
+        std::vector<FieldPoint> v;
+        for (const FieldPoint &p : f.pts) if (p.region == region) v.push_back(p);
+        return v;
+    };
+
+    // ── (1) 膜なし界面 (垂直入射): 定在波と透過波の閉形式 ──────────────────
+    // r = (n0−ns)/(n0+ns) < 0 なので表面が節: |E|² の最小 (1−|r|)² が z = 0、
+    // 最大 (1+|r|)² が z = −λ/(4n0)。基板内は |t|² = (2n0/(n0+ns))² で一定。
+    {
+        const double n0 = 1.0, ns = 1.52, lam = 550.0;
+        const FieldProfile f = fieldProfileS(n0, {}, ns, 0.0, lam, 0.0, 64, lam, 200.0);
+        check(f.valid, "field: bare interface valid");
+        const double r = (n0 - ns) / (n0 + ns);
+        const double t2 = std::pow(2.0 * n0 / (n0 + ns), 2);
+        const std::vector<FieldPoint> inc = regionPts(f, -1), sub = regionPts(f, 0);
+        check(!inc.empty() && !sub.empty(), "field: bare has incident and substrate points");
+        double mx = 0, mn = 1e9, subDev = 0;
+        for (const FieldPoint &p : inc) { mx = std::max(mx, p.e2); mn = std::min(mn, p.e2); }
+        for (const FieldPoint &p : sub) subDev = std::max(subDev, std::fabs(p.e2 - t2));
+        check(std::fabs(mx - (1 + std::fabs(r)) * (1 + std::fabs(r))) < 1e-9,
+              "field: bare standing-wave max = (1+|r|)^2");
+        check(std::fabs(mn - (1 - std::fabs(r)) * (1 - std::fabs(r))) < 1e-9,
+              "field: bare standing-wave min = (1-|r|)^2");
+        check(std::fabs(inc.back().e2 - t2) < 1e-12 && inc.back().z_nm == 0.0,
+              "field: bare surface |E|^2 = |t|^2");
+        check(subDev < 1e-12, "field: lossless substrate |E|^2 constant = |t|^2");
+        check(std::fabs(ns / n0 * sub.front().e2 - f.T) < 1e-12,
+              "field: T = (ns/n0)|Es/E0+|^2");
+        check(f.boundary_nm.size() == 1 && f.layerA.empty(),
+              "field: bare has one boundary and no layers");
+    }
+
+    // ── (2) 1/4 波長の単層 AR (n1 = √ns): R = 0 なので入射側に定在波が無い ──
+    {
+        const double ns = 1.52, lam = 550.0, n1 = std::sqrt(ns);
+        const FieldProfile f = fieldProfileS(1.0, { { n1, 0.0, lam / (4 * n1) } },
+                                             ns, 0.0, lam, 0.0, 64, lam, 0.0);
+        check(f.valid && f.R < 1e-20, "field: quarter-wave AR has R = 0");
+        double dev = 0;
+        for (const FieldPoint &p : regionPts(f, -1)) dev = std::max(dev, std::fabs(p.e2 - 1.0));
+        check(dev < 1e-9, "field: AR incident medium |E|^2 = 1 everywhere (no standing wave)");
+    }
+
+    // ── (3) 多層膜: 界面で接線電界が連続、無損失なら層の吸収 0 ───────────────
+    {
+        const double lam = 550.0, nH = 2.35, nL = 1.46;
+        std::vector<FilmLayer> L;
+        for (int i = 0; i < 5; ++i)
+            L.push_back({ (i % 2) ? nL : nH, 0.0, lam / (4 * ((i % 2) ? nL : nH)) });
+        for (double aoi : { 0.0, 40.0 }) {
+            const FieldProfile f = fieldProfileS(1.0, L, 1.52, 0.0, lam, aoi, 64, 200.0, 100.0);
+            check(f.valid && f.boundary_nm.size() == L.size() + 1,
+                  "field: HL stack valid with N+1 boundaries");
+            int jumps = 0, pairs = 0;
+            for (size_t i = 1; i < f.pts.size(); ++i) {
+                if (f.pts[i].region == f.pts[i - 1].region) continue;
+                ++pairs;
+                if (f.pts[i].z_nm != f.pts[i - 1].z_nm
+                    || std::fabs(f.pts[i].e2 - f.pts[i - 1].e2)
+                           > 1e-12 * std::max(1.0, f.pts[i].e2)) ++jumps;
+            }
+            check(pairs == int(L.size()) + 1 && jumps == 0,
+                  "field: tangential E continuous at every interface");
+            double asum = 0;
+            for (double a : f.layerA) asum += a;
+            check(asum == 0.0, "field: lossless layers absorb nothing");
+            // 斜入射の T = Re(qs)/(n0 cosθ0)·|Es/E0+|² (s 偏波)
+            const double th = aoi * kPi / 180.0;
+            const double qs = std::sqrt(1.52 * 1.52 - std::pow(std::sin(th), 2));
+            const std::vector<FieldPoint> sub = regionPts(f, int(L.size()));
+            check(!sub.empty() && std::fabs(qs / std::cos(th) * sub.front().e2 - f.T) < 1e-10,
+                  "field: T from substrate field matches characteristic matrix");
+        }
+    }
+
+    // ── (4) 吸収のある膜: 分布を体積積分した吸収の合計 = 1 − R − T ──────────
+    // (Poynting の定理。分布の値そのものの検算で、正規化 E0+ や斜入射の
+    //  入射電力 n0·cosθ0 を取り違えるとここが落ちる)
+    {
+        const double lam = 550.0;
+        const std::vector<FilmLayer> L = { { 2.30, 0.01, 60.0 },
+                                           { 0.13, 3.20, 20.0 },   // 銀相当
+                                           { 1.46, 0.00, 90.0 } };
+        for (double aoi : { 0.0, 30.0, 60.0 }) {
+            const FieldProfile f = fieldProfileS(1.0, L, 1.52, 0.0, lam, aoi);
+            double asum = 0;
+            for (double a : f.layerA) asum += a;
+            check(f.valid && f.A > 0.01, "field: absorbing stack has A > 1%");
+            check(std::fabs(asum - f.A) < 1e-6,
+                  "field: sum of layer absorption from |E|^2 = 1 - R - T");
+            check(f.layerA[1] > f.layerA[0] && f.layerA[2] == 0.0,
+                  "field: metal layer absorbs most, lossless layer none");
+        }
+        // 吸収する基板 (k > 0) では基板内で減衰する
+        const FieldProfile g = fieldProfileS(1.0, {}, 1.5, 0.2, lam, 0.0, 64, 0.0, 300.0);
+        const std::vector<FieldPoint> sub = regionPts(g, 0);
+        const double expect = sub.front().e2 * std::exp(-4.0 * kPi * 0.2 * 300.0 / lam);
+        check(g.valid && std::fabs(sub.back().e2 - expect) < 1e-12 * sub.front().e2,
+              "field: absorbing substrate decays as exp(-4 pi k z / lambda)");
+    }
+
+    // ── (5) 不正入力 ───────────────────────────────────────────────────────
+    check(!fieldProfileS(1.0, {}, 1.5, 0.0, 0.0, 0.0).valid, "field: lambda <= 0 rejected");
+    check(!fieldProfileS(1.0, {}, 1.5, 0.0, 550.0, 0.0, 64, -1.0).valid,
+          "field: negative front length rejected");
+    check(!fieldProfileS(1.0, {}, 1.5, 0.0, 550.0, 90.0).valid, "field: grazing incidence rejected");
+}
+
 static void testThinFilmStack()
 {
     using namespace ofd::optics;
@@ -27826,6 +27940,7 @@ int main(int argc, char *argv[])
     testRcwaExtensions();
     testOpticsMaterials();
     testThinFilmStack();
+    testThinFilmField();
     testFilmNotation();
     testOpticalModeSettings();
     testBellhop();
