@@ -126,8 +126,15 @@ class RoomAcousticsTab : public QScrollArea {
     Q_OBJECT
 public:
     explicit RoomAcousticsTab(Project *project, QWidget *parent = nullptr);
+    // 🎧 各席の可聴化の本体 (ダイアログを開かないのでヘッドレス検証からも
+    // 呼べる)。4 席の統計モデル RIR を dir へ rir_P1〜P4.wav として書き、
+    // dry と畳み込んだ <dry 名>_P1〜P4.wav を書く。非同期で、終わると
+    // auralizationFinished() を出す。
+    void startSeatAuralization(const QString &dry, const QString &dir);
 
 signals:
+    // startSeatAuralization の非同期処理が終わった (結果は画面の表示に出る)
+    void auralizationFinished();
     // 「▶ 音響ソルバ連携で計算する」が押された → 音響ソルバ連携タブ
     // (ナビキー "acsolver") へ切り替えてほしい。実行そのものはあちらが持つ
     // (バイナリ解決が要るため自動起動はしない)。切替は MainWindow が中継する。
@@ -175,6 +182,7 @@ private:
     void refreshVariableAcoustics();
     void runVariableAcousticsBatch();   // 4 構成 (コンサート…) の比較表
     void exportVariableAcousticsCsv();
+    void runSeatAuralization();         // 🎧 各席の可聴化 (統計モデルの RIR × ドライ WAV)
     QVector<roomac::VaMechanism> vaMechanismsFromTable() const;
     QVector<int> vaStatesFromTable() const;
     QVector<double> vaBatchKey() const;
@@ -255,6 +263,9 @@ private:
     QPushButton  *m_vaCsvBtn = nullptr;
     bool          m_vaHasResult = false;      // 比較表が今の入力に対応しているか
     QVector<double> m_vaResultKey;            // 表示中の一括解析が依存する値
+    QPushButton  *m_auralBtn = nullptr;
+    QLabel       *m_auralStatus = nullptr;
+    bool          m_auralBusy = false;
 
     // reverb
     QDoubleSpinBox *m_roomL, *m_roomW, *m_roomH;

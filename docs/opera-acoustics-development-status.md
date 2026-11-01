@@ -136,7 +136,7 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   `USE_HDF5=OFF` の既定ビルドでは 11,258)。
   **現在値 (2026-11-01 実測、`USE_HDF5=ON` / カーネル無し):
   `ofdx_selftest` = 24 files loaded, 11,746 checks, 0 failures /
-  `ctest` = 23 テスト 0 failures (checks 合計 1,911)**。
+  `ctest` = 24 テスト 0 failures (checks 合計 2,040)**。
   内訳の変化は負債 #5 (C API api_version 2) の `test_c_api` +242 (281 checks)、
   負債 #6 (WAV ストリーミング読み) の `test_wav` +14 (66 checks)、
   `ofdx-schema` への追加 +5 (13 checks — 版の更新で未知キーを失わないこと /
@@ -148,8 +148,9 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   分布の体積積分による吸収 = 1 − R − T) +31、レンズの波面収差マップ
   (`lens-wavefront`、デカルトの楕円面で無収差・Welford の 3 次展開と Seidel 和の
   一致・Zernike の厳密復元) +22。
-- 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1,900 checks,
-  0 failures** (2026-10-18 実測。残り 2 本は `roomac.fitzroy` 11 checks と
+- 音響コア: `ctest` の `acoustics.*` **22 テスト / 合計 2,029 checks,
+  0 failures** (2026-11-01 実測。統計モデルの受聴位置 RIR `test_statrir` 129
+  checks を追加。残り 2 本は `roomac.fitzroy` 11 checks と
   `kernel.runner_mpi`。従来の「15 テスト / 1292」はテスト追加を反映して
   いない古い集計だった) (`docs/opera-acoustics-validation.md` §9。負債 #7 / #8 の
   `test_bandfilter` 563 checks・`test_clipping` 60 checks、負債 #14 の

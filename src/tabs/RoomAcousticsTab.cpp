@@ -12,9 +12,12 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../acoustics/core/RoomModes.h"
+#include "../acoustics/core/StatisticalRir.h"
+#include "../acoustics/io/WavWriter.h"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
@@ -31,9 +34,11 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextStream>
+#include <QThread>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 using namespace ofd;
 using namespace ofd::roomac;
@@ -577,6 +582,46 @@ const bool s_i18n = [] {
     I18n::reg("rah_notch_obl", "斜め", "oblique");
     // 出力 (追加ボタン)
     I18n::reg("rah_export_aural", "🎧 各席の可聴化", "🎧 Per-seat auralization");
+    I18n::reg("rah_aural_pick_dry", "可聴化するドライ (無響) WAV",
+              "Dry (anechoic) WAV to auralize");
+    I18n::reg("rah_aural_pick_dir", "各席の RIR と可聴化 WAV の出力先",
+              "Output folder for the per-seat RIRs and auralized WAVs");
+    I18n::reg("rah_aural_running", "可聴化中… (%1 席)", "Auralizing… (%1 seats)");
+    I18n::reg("rah_aural_seat",
+              "%1: r = %2 m、拡散音の始まり %3 ms、1 kHz の拡散音/直接音 %4 dB、"
+              "出力ピーク %5 dBFS%6",
+              "%1: r = %2 m, diffuse onset %3 ms, 1 kHz diffuse/direct %4 dB, "
+              "output peak %5 dBFS%6");
+    I18n::reg("rah_aural_clip", " — クリップ %1 サンプル", " — %1 samples clipped");
+    I18n::reg("rah_aural_resampled", " — RIR を %1 Hz へ変換",
+              " — RIR resampled to %1 Hz");
+    I18n::reg("rah_aural_seat_fail", "%1: 失敗 — %2", "%1: failed — %2");
+    I18n::reg("rah_aural_note",
+              "▸ 統計モデルの RIR です (波動計算・音線追跡ではありません): "
+              "直接音 (振幅 1/r、到達 r/c) + 1 次鏡像法の反射 (エコーグラムと同じ) + "
+              "帯域別 (125 Hz〜4 kHz) の指数減衰する拡散音。拡散音は最初の反射 (ITDG) から"
+              "始まり、大きさと減衰は Barron の修正理論の反射音エネルギーと現在の式の "
+              "T(f) に従います (1 次反射は別に足すので、初期のエネルギーは Barron より"
+              "その分だけ大きくなります)。6 帯域の外の拡散音・2 次以上の反射の時間構造・両耳/指向性は含みません。"
+              "席の間で相対レベルを保つため正規化はしていません (絶対音圧ではありません)。"
+              "出力先に rir_P1〜P4.wav と <ドライ名>_P1〜P4.wav を書きます — 可聴化タブの"
+              "「フォルダから自動割当」は受音点名 P1〜P4 の行へ RIR を割り当てます。",
+              "▸ A statistical-model RIR (not a wave or ray simulation): direct sound "
+              "(amplitude 1/r, arriving at r/c) + first-order image reflections (the "
+              "same as the echogram) + an exponentially decaying diffuse part per "
+              "band (125 Hz–4 kHz). The diffuse part starts at the first "
+              "reflection (ITDG) and follows Barron's revised-theory reflected "
+              "energy and T(f) from the current formula (the first-order "
+              "reflections are added on top, so the early energy exceeds Barron's "
+              "by that amount). Diffuse sound outside the six bands, "
+              "the time structure of higher-order reflections, and binaural/"
+              "directivity are not included. Nothing is normalized so the seats keep "
+              "their relative levels (this is not an absolute sound pressure). "
+              "rir_P1–P4.wav and <dry name>_P1–P4.wav are written to the output "
+              "folder — the auralization tab's \"assign from folder\" maps the RIRs "
+              "to receivers named P1–P4.");
+    I18n::reg("rah_aural_internal", "可聴化が内部エラーで止まりました: %1",
+              "Auralization stopped with an internal error: %1");
     I18n::reg("rah_export_ease", "📐 ODEON/EASE 形式エクスポート",
               "📐 Export ODEON/EASE format");
     // ── 表データ / 行ラベル (mock の静的テーブル) ──────────────────────────
@@ -1339,15 +1384,19 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     auto *pngBtn = new QPushButton(I18n::tr("ra_export_png"), sExp);
     row->addWidget(repBtn);
     row->addWidget(pngBtn);
-    // 可聴化 / ODEON・EASE エクスポートは未配線 (絶対規則 5)
+    // 可聴化は統計モデルの RIR で実計算。ODEON・EASE エクスポートは未配線 (絶対規則 5)
     auto *auralBtn = new QPushButton(I18n::tr("rah_export_aural"), sExp);
     auto *easeBtn  = new QPushButton(I18n::tr("rah_export_ease"), sExp);
-    tabhelp::markNotImplemented(auralBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    m_auralBtn = auralBtn;
     tabhelp::markNotImplemented(easeBtn, I18n::tr(tabhelp::notimpl::kFormat));
     row->addWidget(auralBtn);
     row->addWidget(easeBtn);
     row->addStretch(1);
     sExp->vbox()->addLayout(row);
+    m_auralStatus = new QLabel(sExp);
+    m_auralStatus->setWordWrap(true);
+    m_auralStatus->setVisible(false);
+    sExp->vbox()->addWidget(m_auralStatus);
     v->addWidget(sExp);
 
     v->addStretch(1);
@@ -1356,6 +1405,7 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     connect(repBtn, &QPushButton::clicked, this, &RoomAcousticsTab::exportReport);
+    connect(auralBtn, &QPushButton::clicked, this, &RoomAcousticsTab::runSeatAuralization);
     connect(pngBtn, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(
             this, I18n::tr("ra_export_png"), "coverage.png", "PNG (*.png)");
@@ -1364,6 +1414,162 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
 
     connect(project, &Project::loaded, this, &RoomAcousticsTab::refresh);
     refresh();
+}
+
+// ── 各席の可聴化 ────────────────────────────────────────────────────────────
+// 4 席それぞれに統計モデルの RIR (acoustics::synthesizeStatisticalRir) を作り、
+// ドライ WAV と畳み込んで書き出す。RIR の材料 (距離・1 次鏡像の反射・T(f)・
+// Barron の反射音エネルギー) はすべてこのタブの他の表示と同じ関数から取る。
+void RoomAcousticsTab::runSeatAuralization()
+{
+    if (m_auralBusy) return;
+    const QString dry = QFileDialog::getOpenFileName(
+        this, I18n::tr("rah_aural_pick_dry"), QString(), "WAV (*.wav)");
+    if (dry.isEmpty()) return;
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, I18n::tr("rah_aural_pick_dir"), QFileInfo(dry).absolutePath());
+    if (dir.isEmpty()) return;
+    startSeatAuralization(dry, dir);
+}
+
+void RoomAcousticsTab::startSeatAuralization(const QString &dry, const QString &dir)
+{
+    if (m_auralBusy) return;
+    struct Seat {
+        QString id, label;
+        acoustics::StatisticalRirConfig cfg;
+        double r = 0, lateDb1k = 0, onsetMs = 0;
+        QString rirPath, wetPath;
+    };
+    const AcousticOpts &a = m_p->acoustic();
+    const double c = roomac::soundSpeed();
+    const double V = std::max(1.0, a.volume);
+    double src[3];
+    sourcePos(src);
+    QVector<Seat> seats;
+    for (int i = 0; i < 4; ++i) {
+        Seat st;
+        st.id = QStringLiteral("P%1").arg(i + 1);
+        st.label = I18n::tr(kReceivers[i].key);
+        double rcv[3];
+        receiverPos(i, rcv);
+        const double dx = rcv[0] - src[0], dy = rcv[1] - src[1], dz = rcv[2] - src[2];
+        st.r = std::max(1.0, std::sqrt(dx * dx + dy * dy + dz * dz));
+        acoustics::StatisticalRirConfig &cfg = st.cfg;
+        cfg.sampleRateHz = 48000.0;
+        cfg.directDelaySeconds = st.r / c;
+        cfg.directAmplitude = 1.0 / st.r;      // 1 m 基準 (席の間の相対レベル)
+        cfg.seed = unsigned(i + 1);
+        const QVector<roomac::Reflection> refl = roomac::echogram(a, src, rcv);
+        for (int k = 1; k < refl.size(); ++k)       // 先頭は直接音
+            cfg.reflections.push_back(acoustics::StatRirReflection(
+                refl[k].timeMs * 1e-3, std::pow(10.0, refl[k].levelDb / 20.0)));
+        // 拡散音は最初の反射 (ITDG) から始める — それより前は直接音だけ、が
+        // ITDG の定義。1 次反射を拡散音から差し引くと、前方の席では 1 次反射
+        // だけで Barron の反射音を超える帯域が出て残響が消える (実測で 4 kHz の
+        // T30 が 0.34 s になった) ので差し引かない
+        const double onset = std::max(0.0, roomac::itdgMs(refl) * 1e-3);
+        cfg.diffuseOnsetSeconds = onset;
+        st.onsetMs = onset * 1e3;
+        // Barron の修正理論: 直接音 d = 100/r²、反射音 (31200T/V)·e^{−0.04r/T}
+        // (音の放射時刻から e^{−13.82 t/T} で減衰)。始まり以降のぶんは
+        // さらに e^{−13.82·onset/T}
+        const double d = 100.0 / (st.r * st.r);
+        for (int b = 0; b < acoustics::kStatRirBands; ++b) {
+            const double T = std::max(0.05, roomac::rt60(a, b));
+            const double rev = (31200.0 * T / V) * std::exp(-0.04 * st.r / T);
+            cfg.rt60[b] = T;
+            cfg.lateToDirect[b] = rev / d * std::exp(-13.8155 * onset / T);
+        }
+        st.lateDb1k = (cfg.lateToDirect[3] > 0.0)
+                          ? 10.0 * std::log10(cfg.lateToDirect[3]) : -999.0;
+        const QString base = QFileInfo(dry).completeBaseName();
+        st.rirPath = QDir(dir).filePath(QStringLiteral("rir_%1.wav").arg(st.id));
+        st.wetPath = QDir(dir).filePath(QStringLiteral("%1_%2.wav").arg(base, st.id));
+        seats << st;
+    }
+
+    struct Out {
+        bool ok = false;
+        QString error;
+        double peakDbfs = 0;
+        long long clipped = 0;
+        double resampledTo = 0;
+    };
+    auto outs = std::make_shared<QVector<Out>>(seats.size());
+    auto fault = std::make_shared<std::string>();
+    m_auralBusy = true;
+    m_auralBtn->setEnabled(false);
+    m_auralStatus->setVisible(true);
+    m_auralStatus->setText(I18n::tr("rah_aural_running").arg(seats.size()));
+    // 入力 (席ごとの設定とパス) は値で捕捉する — gui.md の非同期の流儀
+    QThread *th = QThread::create([seats, dry, outs, fault] {
+        try {
+            for (int i = 0; i < seats.size(); ++i) {
+                Out &o = (*outs)[i];
+                const acoustics::AcousticResult<acoustics::AudioBuffer> rir =
+                    acoustics::synthesizeStatisticalRir(seats[i].cfg);
+                if (!rir.success()) {
+                    o.error = QString::fromStdString(rir.message());
+                    continue;
+                }
+                const acoustics::AcousticResult<bool> wr = acoustics::writeWavFile(
+                    std::string(QFile::encodeName(seats[i].rirPath).constData()),
+                    rir.value(), acoustics::WavSampleFormat::Float32);
+                if (!wr.success()) {
+                    o.error = QString::fromStdString(wr.message());
+                    continue;
+                }
+                QtAcousticAdapter::RirResampleNote note;
+                const acoustics::AcousticResult<acoustics::ConvolutionInfo> cv =
+                    QtAcousticAdapter::convolveFiles(dry, seats[i].rirPath,
+                                                     seats[i].wetPath, 0, nullptr,
+                                                     nullptr, nullptr, &note);
+                if (!cv.success()) {
+                    o.error = QString::fromStdString(cv.message());
+                    continue;
+                }
+                o.ok = true;
+                o.peakDbfs = cv.value().outputPeakDbfs;
+                o.clipped = (long long)cv.value().clippedSampleCount;
+                if (note.resampled) o.resampledTo = note.toHz;
+            }
+        } catch (const std::exception &e) {
+            *fault = e.what();
+        } catch (...) {
+            *fault = "unknown exception";
+        }
+    });
+    connect(th, &QThread::finished, th, &QObject::deleteLater);
+    connect(th, &QThread::finished, this, [this, seats, outs, fault] {
+        m_auralBusy = false;
+        m_auralBtn->setEnabled(true);
+        QStringList lines;
+        if (!fault->empty())
+            lines << I18n::tr("rah_aural_internal").arg(QString::fromStdString(*fault));
+        for (int i = 0; i < seats.size(); ++i) {
+            const Seat &st = seats[i];
+            const Out &o = (*outs)[i];
+            if (!o.ok) {
+                lines << I18n::tr("rah_aural_seat_fail").arg(st.label, o.error);
+                continue;
+            }
+            QString extra;
+            if (o.clipped > 0) extra += I18n::tr("rah_aural_clip").arg(o.clipped);
+            if (o.resampledTo > 0)
+                extra += I18n::tr("rah_aural_resampled").arg(o.resampledTo, 0, 'f', 0);
+            lines << I18n::tr("rah_aural_seat")
+                         .arg(st.label, QString::number(st.r, 'f', 1),
+                              QString::number(st.onsetMs, 'f', 1),
+                              st.lateDb1k > -900 ? QString::number(st.lateDb1k, 'f', 1)
+                                                 : QString::fromUtf8("—"),
+                              QString::number(o.peakDbfs, 'f', 1), extra);
+        }
+        lines << I18n::tr("rah_aural_note");
+        m_auralStatus->setText(lines.join(QStringLiteral("\n")));
+        emit auralizationFinished();
+    });
+    th->start();
 }
 
 void RoomAcousticsTab::sourcePos(double out[3]) const
