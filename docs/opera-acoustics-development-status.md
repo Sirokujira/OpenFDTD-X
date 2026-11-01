@@ -3925,7 +3925,7 @@ rcwadispersion = <層(1..)> <材質(1|2)> <ε∞> <ae> <be> <ce>   [rad/s]
   で読む。全ソルバ実行の突き合わせ欄に、伝搬次数の数・0 次以外で最大の次数・
   **次数の和と合計 (rcwa_efficiency.csv) のずれ**を出す。
 
-検証 (selftest +295 checks、`OFDX_ORCWA_BIN` があればさらに +9):
+検証 (selftest 11258 → 11544 checks (+286)、`OFDX_ORCWA_BIN` があればさらに +9):
 
 - `rcwa-ext`: 妥当性 (損失金属は有効・利得は無効・fy 範囲・極の各条件)、既定値で
   出力不変、虚部の組と fy の位置、`fy < 1` / `rcwa2d` / FMM での 2D 行、分散行と
