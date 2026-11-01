@@ -7373,24 +7373,59 @@ static void testRunGating()
             // findExecutable が PATHEXT (.exe) を補うので両方の名前を置く
             touchExec(mdir.path() + "/bin/mpiexec");
             touchExec(mdir.path() + "/bin/mpiexec.exe");
+            // カーネルの隣より先に探す「環境」側の結果 (探索順の 2〜4:
+            // PATH → $MSMPI_BIN → 標準のインストール先)。本物の MS-MPI が
+            // ある環境 (CI の Windows ジョブは MSMPI_BIN だけを設定する) でも
+            // 期待値が正しくなるよう、同じ順で求める。
             const QString onPath =
                 QStandardPaths::findExecutable(QStringLiteral("mpiexec"));
+            QString fromEnv = onPath;
+            if (fromEnv.isEmpty()) {
+                QStringList envDirs;
+                envDirs << qEnvironmentVariable("MSMPI_BIN");
+#ifdef Q_OS_WIN
+                envDirs << QStringLiteral("C:/Program Files/Microsoft MPI/Bin");
+#endif
+                envDirs.removeAll(QString());
+                for (const char *name : { "mpiexec", "mpirun" }) {
+                    fromEnv = QStandardPaths::findExecutable(
+                        QLatin1String(name), envDirs);
+                    if (!fromEnv.isEmpty()) break;
+                }
+            }
             const QString prevSetting = Runner::mpiLauncherSetting();
             Runner::setMpiLauncherSetting(QString());
             RunConfig kc;
             kc.binaryDir = mdir.path();
             const QString found = Runner::findMpiLauncher(kc);
-            check(onPath.isEmpty() ? found.startsWith(mdir.path())
-                                   : found == onPath,
+            check(fromEnv.isEmpty() ? found.startsWith(mdir.path())
+                                    : found == fromEnv,
                   "mpi: launcher found next to the kernel (binaryDir/bin) "
-                  "when PATH has none, PATH wins otherwise");
-            // 検索ディレクトリを与えなければ、PATH に無い限り見つからない
+                  "when PATH / MSMPI_BIN / the standard place have none, "
+                  "those win otherwise");
+            // 検索ディレクトリを与えなければ、環境に無い限り見つからない
             // (偽の mpiexec で「使える」と言わない)
             RunConfig none;
-            check(onPath.isEmpty() ? !Runner::findMpiLauncher(none)
-                                          .startsWith(mdir.path())
-                                   : true,
+            check(!Runner::findMpiLauncher(none).startsWith(mdir.path()),
                   "mpi: a temp dir outside the search list is not consulted");
+            // $MSMPI_BIN の経路そのもの (管理者権限なしで MS-MPI を展開し、
+            // PATH には足していない構成 — 公式インストーラもこの変数を設定する)。
+            // PATH に mpiexec があると PATH が勝つので、その環境では見ない。
+            if (onPath.isEmpty()) {
+                QTemporaryDir msdir;
+                if (msdir.isValid()) {
+                    touchExec(msdir.path() + "/mpiexec");
+                    touchExec(msdir.path() + "/mpiexec.exe");
+                    const QByteArray prevMs = qgetenv("MSMPI_BIN");
+                    const bool hadMs = qEnvironmentVariableIsSet("MSMPI_BIN");
+                    qputenv("MSMPI_BIN", QFile::encodeName(msdir.path()));
+                    check(Runner::findMpiLauncher(kc).startsWith(msdir.path()),
+                          "mpi: $MSMPI_BIN is searched (before the kernel dir) "
+                          "when PATH has no mpiexec");
+                    if (hadMs) qputenv("MSMPI_BIN", prevMs);
+                    else       qunsetenv("MSMPI_BIN");
+                }
+            }
             // GUI 設定は PATH より優先
             const QString explicitPath = mdir.path() + "/mpiexec-custom"
 #ifdef Q_OS_WIN
