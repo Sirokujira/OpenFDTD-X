@@ -1524,6 +1524,85 @@ static void testRoomAcoustics()
               "src->feed sync: zero enabled keeps feeds unchanged");
     }
 
+    // ── 音源リストの種類・向き → feed ごとの指向性 (ADR-0014) ────────────────
+    // Cardioid は "cardioid" + 向き (parseAim と同じ単位ベクトル)、Omni は
+    // 無指向、Bipolar / Directional は 1 次パターンで表せないので無指向 +
+    // 件数報告、向きの読めない Cardioid は向きなし + 件数報告 (起動前点検が
+    // 止める)。全行無指向なら feedDrives は空 (キーを書かない)。
+    {
+        Project p;
+        auto &sl = p.acoustic().sources;
+        sl.clear();
+        auto mk = [](int kind, const char *aim) {
+            AcousticSourceRow r;
+            r.kind = kind;
+            r.aim = QString::fromUtf8(aim);
+            r.x_m = 1.0; r.y_m = 1.0; r.z_m = 1.0;
+            return r;
+        };
+        sl << mk(AcousticSourceRow::Omni, "+X")
+           << mk(AcousticSourceRow::Cardioid, "-Z 30°")
+           << mk(AcousticSourceRow::Bipolar, "+Y")
+           << mk(AcousticSourceRow::Cardioid, "towards the stage");
+        // 置き換え前の feed のゲインは新しい feed とは対応しないので消える
+        AcousticOpts::FeedDrive stale;
+        stale.gain = 3.0;
+        p.acoustic().feedDrives = { stale };
+        AcousticSourceTab::SyncReport rep;
+        const int n = AcousticSourceTab::syncFeedsFromSources(p, &rep);
+        const auto &fd = p.acoustic().feedDrives;
+        check(n == 4 && fd.size() == 4, "src->feed dir: one drive per feed");
+        if (fd.size() == 4) {
+            double v[3];
+            const bool ok = parseAim(QStringLiteral("-Z 30°"), v);
+            check(fd[0].directivity.isUndefined() && !fd[0].hasAim
+                  && fd[0].gain == 1.0,
+                  "src->feed dir: omni row stays omni (stale gain reset)");
+            check(ok && fd[1].directivity.toString() == "cardioid" && fd[1].hasAim
+                  && std::abs(fd[1].aim[0] - v[0]) < 1e-12
+                  && std::abs(fd[1].aim[2] - v[2]) < 1e-12,
+                  "src->feed dir: cardioid row gets the parsed aim");
+            check(fd[2].directivity.isUndefined(),
+                  "src->feed dir: bipolar is not faked as a first-order pattern");
+            check(fd[3].directivity.toString() == "cardioid" && !fd[3].hasAim,
+                  "src->feed dir: unreadable aim leaves the aim empty");
+        }
+        check(rep.unrepresentable == 1 && rep.noAim == 1,
+              "src->feed dir: the report counts both kinds of loss");
+        // 向きの読めない行は起動前点検が止める (ソルバーも非零終了する条件)
+        for (int a = 0; a < 3; ++a) {
+            MeshAxis &m = p.mesh(a);
+            m.nodes.clear(); m.divs.clear();
+            m.nodes << 0.0 << 4.0;
+            m.divs << 16;
+        }
+        Probe pr; pr.x = 3.0; pr.y = 3.0; pr.z = 3.0;
+        p.probes().push_back(pr);
+        check(ofd::preflight::acousticRunProblems(p).size() == 1,
+              "src->feed dir: preflight stops the aimless cardioid feed");
+
+        // 全行無指向 : feedDrives は空 (旧ファイルとバイト一致の経路)
+        Project q;
+        q.acoustic().sources.clear();
+        q.acoustic().sources << mk(AcousticSourceRow::Omni, "")
+                             << mk(AcousticSourceRow::Omni, "+X");
+        q.acoustic().feedDrives = { stale };
+        AcousticSourceTab::syncFeedsFromSources(q);
+        check(q.acoustic().feedDrives.isEmpty(),
+              "src->feed dir: all-omni sync writes no feeds key");
+        // 既定の音源リスト (カーディオイド 3 行、向き "-Z 30°" / "-Z") は
+        // 3 つとも向きつきのカーディオイドになる
+        Project r;
+        r.acoustic().sources = defaultAcousticSources();
+        AcousticSourceTab::SyncReport rr;
+        AcousticSourceTab::syncFeedsFromSources(r, &rr);
+        bool allCard = r.acoustic().feedDrives.size() == 3;
+        for (const auto &d : r.acoustic().feedDrives)
+            if (d.directivity.toString() != "cardioid" || !d.hasAim) allCard = false;
+        check(allCard && rr.unrepresentable == 0 && rr.noAim == 0,
+              "src->feed dir: default sources become aimed cardioids");
+    }
+
     // ── 音源リストの信号 (WAV) → 可聴化のドライ音源 ──────────────────────────
     // AuralizationTab::drySourceCandidates / setDryFromSource:
     // 「有効かつ信号が非空の行」だけがドライ音源の候補で、選んだ 1 行の

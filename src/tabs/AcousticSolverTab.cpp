@@ -285,15 +285,16 @@ const bool s_i18n = [] {
         "力の双極子、幾何音響はバンド別に直接音・鏡像・レイへ)。背面ローブ "
         "(a < 0.5) は極性が反転する。「ファイルの値」は .ofdx に手書きされた "
         "数値・バンド別の配列で、別の項目を選ぶまでそのまま書き戻す。"
-        "音源リストの種類・向きはここへは反映されない (位置のみ)。",
+        "音源リスト (🎤 音源/WAV/指向性タブ) の「⚡ ソルバ波源へ反映」は、種類が"
+        "カーディオイドの行を向きつきのカーディオイドとしてここへ書く。",
         "Source directivity D(θ) = a + (1−a) cosθ (θ from the aim; the "
         "on-axis pressure equals the omni source — ADR-0014). Both solvers read "
         "it the same way (FDTD: monopole + force dipole; geometric: per band on "
         "the direct sound, images and rays). Rear lobes (a < 0.5) invert "
         "polarity. “Value from file” is a hand-written number or per-band "
         "array in the .ofdx, written back unchanged until another item is "
-        "chosen. The source list's kind/aim is not transferred here "
-        "(positions only).");
+        "chosen. “Apply to solver feeds” in the source list writes cardioid "
+        "rows here as cardioid with their aim.");
     I18n::reg("acs_aim_note",
         "音源が向く方向 [x, y, z] (長さは無関係 — ソルバーが正規化する)。"
         "無指向以外では 0 でない向きが必要 (無いとソルバーが非零終了する)。"

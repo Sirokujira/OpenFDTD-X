@@ -152,28 +152,50 @@ const bool s_i18n = [] {
               "復元されます。現在の音響計算 (統計推定・ソルバー連携) は"
               "「音響」タブの単一音源設定 (位置・基準SPL) を使うため、"
               "この一覧が自動でカーネル入力へ渡されることはありません "
-              "(位置のみ、下の反映ボタンで明示的に波源へ書き込めます)。",
+              "(位置と指向性は、下の反映ボタンで明示的に波源へ書き込めます)。",
               "▸ The source list is stored in the project (.ofdx) and restored "
               "on reload. The present acoustic computations (statistical "
               "estimate / solver hand-off) use the single source (position and "
               "reference SPL) from the Acoustic tab — this list is never "
-              "passed to the kernel input automatically (only the positions "
-              "can be written into the feeds explicitly with the apply button "
-              "below).");
+              "passed to the kernel input automatically (positions and "
+              "directivity can be written into the feeds explicitly with the "
+              "apply button below).");
     // 音源リスト → ソルバ波源 (feed) への反映導線 (室内音響のみ)
     I18n::reg("asrc_btn_sync", "⚡ 有効な音源をソルバ波源へ反映",
               "⚡ Apply enabled sources to solver feeds");
     I18n::reg("asrc_sync_title", "ソルバ波源へ反映", "Apply to solver feeds");
     I18n::reg("asrc_sync_confirm",
               "現在の波源 %1 個を、音源リストの有効な音源 %2 個で"
-              "置き換えます。\n\n反映されるのは位置のみです — 指向性・WAV・"
-              "レベルはソルバへは渡りません (可聴化・解析側で使用します)。"
-              "振幅・位相・内部抵抗は既定値になります。よろしいですか？",
+              "置き換えます。\n\n反映されるのは位置と指向性です — 種類が"
+              "カーディオイドの行は向きつきのカーディオイド、無指向の行は無指向"
+              "になります (バイポーラ・指向性は 1 次パターンで表せないので"
+              "無指向)。WAV・レベルはソルバへは渡りません (可聴化・解析側で"
+              "使用します)。振幅・位相・内部抵抗と feed ごとのゲイン・遅延は"
+              "既定値になります。よろしいですか？",
               "Replace the current %1 feed(s) with the %2 enabled source(s) of "
-              "this list?\n\nOnly the positions are applied — directivity, WAV "
-              "and level are not passed to the solver (they are used by "
-              "auralization / analysis). Amplitude, phase and internal "
-              "impedance are set to their defaults.");
+              "this list?\n\nPositions and directivity are applied — cardioid "
+              "rows become cardioid feeds with their aim, omni rows stay omni "
+              "(bipolar / directional cannot be expressed as a first-order "
+              "pattern and are applied as omni). WAV and level are not passed "
+              "to the solver (they are used by auralization / analysis). "
+              "Amplitude, phase, internal impedance and the per-feed gain / "
+              "delay are set to their defaults.");
+    I18n::reg("asrc_sync_dir_report",
+              "反映しました。ただし:\n%1",
+              "Applied, with these notes:\n%1");
+    I18n::reg("asrc_sync_unrep",
+              "・%1 行はバイポーラ / 指向性で、ソルバーの 1 次パターンで"
+              "表せないため無指向として渡しました。",
+              "• %1 row(s) are bipolar / directional, which the solvers' "
+              "first-order pattern cannot express — applied as omni.");
+    I18n::reg("asrc_sync_noaim",
+              "・%1 行はカーディオイドですが向き (例: +X / -Z 30° / 0,0,-1) が"
+              "読めません。🔌 音響ソルバ連携タブの feed 表で向きを入れてください"
+              " (向きの無い指向性ではソルバーが止まります)。",
+              "• %1 cardioid row(s) have an aim that cannot be read (e.g. +X / "
+              "-Z 30° / 0,0,-1). Enter the aim in the feed table of the "
+              "Acoustic Solver tab (the solvers stop on a directivity without "
+              "an aim).");
     I18n::reg("asrc_sync_outside",
               "⚠ そのうち %1 個はソルバ領域の外です "
               "(室は X [%2, %3] · Y [%4, %5] · Z [%6, %7] m)。"
@@ -190,14 +212,14 @@ const bool s_i18n = [] {
               "The feeds were not changed.");
     I18n::reg("asrc_sync_note",
               "▸ ソルバ (計算実行) が使う点音源は「④波源」タブの feed です。"
-              "この一覧の指向性・WAV・レベルは可聴化/解析用でソルバへは"
-              "渡りません — 上の反映ボタンで有効行の位置だけを feed へ"
-              "書き込めます (レベル [dB] は校正が無いため振幅へ換算しません)。",
+              "上の反映ボタンで有効行の位置と指向性 (カーディオイド + 向き) を"
+              "feed へ書き込めます。WAV・レベルは可聴化/解析用でソルバへは"
+              "渡りません (レベル [dB] は校正が無いため振幅へ換算しません)。",
               "▸ The point sources the solver (run button) uses are the feeds "
-              "of the ④ Sources tab. Directivity, WAV and level in this list "
-              "are for auralization / analysis and are not passed to the "
-              "solver — the apply button above writes only the positions of "
-              "the enabled rows into the feeds (level [dB] is not converted "
+              "of the ④ Sources tab. The apply button above writes the "
+              "positions and directivity (cardioid + aim) of the enabled rows "
+              "into the feeds. WAV and level are for auralization / analysis "
+              "and are not passed to the solver (level [dB] is not converted "
               "to an amplitude because there is no calibration).");
     I18n::reg("asrc_col_solver", "ソルバ", "Solver");
     I18n::reg("asrc_solver_feed", "ソルバ波源 #%1", "Solver feed #%1");
@@ -1187,7 +1209,7 @@ QWidget *AcousticSourceTab::buildSourcesPage()
         refreshSourceTable();
         m_p->touch();
     });
-    // 反映: 有効行の位置のみを feed へ書き込む (確認ダイアログ付き)。
+    // 反映: 有効行の位置と指向性を feed へ書き込む (確認ダイアログ付き)。
     // 有効行 0 のときはボタン無効化ではなくメッセージで理由を示す
     // (チェック切替の度の再計算を持ち回らずに済み、理由も伝わる)。
     connect(m_syncBtn, &QPushButton::clicked, this, [this] {
@@ -1234,9 +1256,19 @@ QWidget *AcousticSourceTab::buildSourcesPage()
                 QMessageBox::Ok | QMessageBox::Cancel,
                 QMessageBox::Cancel) != QMessageBox::Ok)
             return;   // キャンセル — feed は変更しない
-        syncFeedsFromSources(*m_p);
+        SyncReport rep;
+        syncFeedsFromSources(*m_p, &rep);
         m_p->touch();
         refreshSourceTable();   // 「ソルバ波源 #n」マーカーを即時更新
+        // 指向性を渡せなかった行は黙らずに伝える (ADR-0014)
+        QStringList notes;
+        if (rep.unrepresentable > 0)
+            notes << I18n::tr("asrc_sync_unrep").arg(rep.unrepresentable);
+        if (rep.noAim > 0)
+            notes << I18n::tr("asrc_sync_noaim").arg(rep.noAim);
+        if (!notes.isEmpty())
+            QMessageBox::information(this, I18n::tr("asrc_sync_title"),
+                I18n::tr("asrc_sync_dir_report").arg(notes.join('\n')));
     });
 
     auto *sc = new SectionBox(I18n::tr("asrc_common_section"), page);
