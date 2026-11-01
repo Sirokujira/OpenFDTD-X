@@ -87,6 +87,30 @@ private:
     double m_airy = 0.0;
 };
 
+// 波面収差マップ (実光線追跡の OPD)。瞳を円で描き、0 を白とする青-白-赤の
+// 発散色で正負を分ける (符号に意味があるので jet のような順序色は使わない)。
+// 複数のパネル (軸上・視野端) は同じ色スケールを共有する。
+class WavefrontMapView : public QWidget {
+    Q_OBJECT
+public:
+    explicit WavefrontMapView(QWidget *parent = nullptr);
+
+    struct Panel {
+        int n = 0;                  // 瞳格子の一辺の点数
+        QVector<QPointF> pupil;     // 正規化瞳座標 (−1 … +1)
+        QVector<double>  waves;     // W [波長]
+        QString title;
+    };
+    void setPanels(const QVector<Panel> &panels);
+    void clear();
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+
+private:
+    QVector<Panel> m_panels;
+};
+
 // Merit Function の 1 オペランド。目標と重みは利用者が編集できる定義値、
 // 「値」は近軸追跡と 3 次収差で計算できるものだけを埋める。
 struct MeritOperand {
@@ -106,6 +130,7 @@ private slots:
     void runSpotDiagram();          // ⊙ スポットダイアグラム (実光線追跡)
     void runRayFan();               // 📐 レイファン (光線収差図)
     void runChromatic();            // 🌈 色収差 (波長ごとの焦点移動)
+    void runWavefront();            // ⊕ 波面収差マップ + Fringe Zernike (実光線追跡)
     void runMtf();                  // 📊 MTF (回折限界 + 幾何)
     void runEncircled();            // ⬡ 包絡エネルギー (幾何)
     void runDistortion();           // ▦ 歪曲格子 (主光線 vs 近軸)
@@ -157,6 +182,7 @@ private:
     QWidget        *m_waveBadges = nullptr;
     // 解析プロット (実光線追跡)
     SpotDiagramView *m_spotView = nullptr;
+    WavefrontMapView *m_wfView = nullptr;
     MiniPlot        *m_fanPlot = nullptr;
     QLabel          *m_anInfo = nullptr;   // 数値 (RMS / GEO / エアリー半径)
     QLabel          *m_anNote = nullptr;   // 前提と限界

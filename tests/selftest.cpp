@@ -118,6 +118,7 @@
 #include "io/Tidy3dExporter.h"
 #include "optics/IlluminationTrace.h"
 #include "optics/RayTrace.h"
+#include "optics/Wavefront.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
@@ -22803,6 +22804,143 @@ static void testEncircledEnergy()
 // 回折限界は「2 つの円の重なり面積」の閉形式なので、**面積を数値積分で
 // 独立に出して**突き合わせる。幾何 MTF は等間隔に並べた光線なら
 // Dirichlet 核が厳密解になるので、それと突き合わせる。
+static void testWavefront()
+{
+    using namespace ofd;
+    g_file = "lens-wavefront";
+    // 中心 (ρ = 0) と瞳端 (ρ = 1、py = ±1) の W を拾う
+    auto wAt = [](const wavefront::Map &m, double px, double py) {
+        for (std::size_t i = 0; i < m.w_mm.size(); ++i)
+            if (std::fabs(m.px[i] - px) < 1e-12 && std::fabs(m.py[i] - py) < 1e-12)
+                return m.w_mm[i];
+        return std::nan("");
+    };
+
+    // ── (1) 完全結像する楕円面: 回転楕円面 k = −1/n² の 1 面は無限遠の
+    //        軸上物点を後側焦点 nR/(n−1) へ無収差で結ぶ (デカルトの卵形)
+    {
+        const double n = 1.5, R = 20.0, f = n * R / (n - 1);
+        raytrace::System s;
+        raytrace::Surface a;
+        a.R = R; a.conic = -1.0 / (n * n); a.nAfter = n; a.stop = true;
+        s.surfaces = { a };
+        s.imageDistance = f;
+        const wavefront::Map m = wavefront::wavefrontMap(s, 10.0, 0.0, 21);
+        check(m.valid && m.failed == 0, "wavefront: ellipsoid traced");
+        check(m.pv_mm < 1e-11, "wavefront: Cartesian ellipsoid is aberration-free (P-V ~ 0)");
+        check(std::fabs(m.exitPupilZ) < 1e-12 && std::fabs(m.refRadius - f) < 1e-9,
+              "wavefront: stop on the only surface -> exit pupil at its vertex, radius = f");
+        // 21 × 21 の格子で単位円に入る点の数
+        int inside = 0;
+        for (int iy = 0; iy < 21; ++iy)
+            for (int ix = 0; ix < 21; ++ix) {
+                const double px = -1 + 0.1 * ix, py = -1 + 0.1 * iy;
+                if (px * px + py * py <= 1.0 + 1e-12) ++inside;
+            }
+        check(m.traced == inside, "wavefront: every pupil sample inside the unit circle traced");
+
+        // 焦点ずれ δ: 参照球の中心を δ ずらすと周縁光線の W は
+        // n·δ·(1 − cos U') だけ変わる (U' = 周縁光線の像側の角度。δ の 1 次で厳密)
+        const raytrace::RayResult mr = raytrace::traceRay(s, 10.0, 0.0, 0.0, 1.0);
+        for (double d : { 0.02, -0.02 }) {
+            s.imageDistance = f + d;
+            const wavefront::Map md = wavefront::wavefrontMap(s, 10.0, 0.0, 21);
+            const double dw = wAt(md, 0.0, 1.0) - wAt(md, 0.0, 0.0);
+            const double expect = n * d * (1.0 - mr.N);
+            check(md.valid && std::fabs(dw - expect) < 0.01 * std::fabs(expect),
+                  "wavefront: defocus W(edge) = n*delta*(1 - cos U') (1%)");
+        }
+    }
+
+    // ── (2) 単レンズの 3 次収差 = Seidel 和 (Welford の展開と同じ符号) ────────
+    //   W = S_I/8 ρ⁴ + S_II/2 Hρ³cosφ + S_III/2 H²ρ²cos²φ + (S_III+S_IV)/4 H²ρ²
+    //   Fringe Zernike では W040 = 6·Z9、W131 = 3·Z8、W222 = −2·Z5、
+    //   ρ² の係数 2·Z4 − 6·Z9 = S_III/2 + S_IV/4 (平面の像面上)。
+    //   F/25・視野 2° では 5 次以上の寄与は 1 % 未満 (開口を半分にすると
+    //   球面の差が縮むことも合わせて見る — 高次なら開口の 2 乗以上で消える)。
+    {
+        std::vector<paraxial::Surface> ps(2);
+        ps[0].R = 50; ps[0].thickness = 5; ps[0].nAfter = 1.5168; ps[0].stop = true;
+        ps[1].R = -50; ps[1].thickness = 0; ps[1].nAfter = 1.0;
+        const paraxial::SystemData pd = paraxial::analyze(ps, -1, 4.0, 0.0);
+        raytrace::System s;
+        s.surfaces = raytrace::fromParaxial(ps);
+        s.imageDistance = pd.bfl;
+
+        // 射出瞳 = 第 1 面 (絞り) を第 2 面で近軸結像した位置 (閉形式)
+        const double nG = 1.5168, P2 = (1.0 - nG) / -50.0;
+        const double xpExpect = 1.0 / (P2 + nG / -5.0);
+        bool ok = false;
+        const double xp = wavefront::exitPupilZ(s, &ok);
+        check(ok && std::fabs(xp - xpExpect) < 1e-12, "wavefront: exit pupil = paraxial image of the stop");
+
+        double relErr[2] = { 0, 0 };
+        const double epds[2] = { 4.0, 2.0 };
+        for (int k = 0; k < 2; ++k) {
+            const seidel::Result sd = seidel::analyze(ps, epds[k], 2.0);
+            const wavefront::Map m0 = wavefront::wavefrontMap(s, epds[k], 0.0, 31);
+            const wavefront::ZernikeFit z0 = wavefront::fitFringe(m0.px, m0.py, m0.w_mm);
+            check(m0.valid && z0.valid, "wavefront: singlet on-axis map and fit");
+            relErr[k] = std::fabs(6.0 * z0.c[8] - sd.sI / 8.0) / std::fabs(sd.sI / 8.0);
+            double asym = 0.0;
+            for (int j : { 1, 2, 4, 5, 6, 7 }) asym = std::max(asym, std::fabs(z0.c[j]));
+            check(asym < 1e-6 * std::fabs(z0.c[8]),
+                  "wavefront: on-axis map has no tilt/astigmatism/coma (rotational symmetry)");
+            if (k == 1) {
+                const wavefront::Map m2 = wavefront::wavefrontMap(s, epds[k], 2.0, 31);
+                const wavefront::ZernikeFit z2 = wavefront::fitFringe(m2.px, m2.py, m2.w_mm);
+                check(m2.valid && z2.valid, "wavefront: singlet 2 deg map and fit");
+                check(std::fabs(3.0 * z2.c[7] - sd.sII / 2.0) < 0.01 * std::fabs(sd.sII / 2.0),
+                      "wavefront: coma W131 = 3*Z8 = S_II/2 (1%)");
+                check(std::fabs(-2.0 * z2.c[4] - sd.sIII / 2.0) < 0.01 * std::fabs(sd.sIII / 2.0),
+                      "wavefront: astigmatism W222 = -2*Z5 = S_III/2 (1%)");
+                const double curv = 2.0 * z2.c[3] - 6.0 * z2.c[8];
+                const double curvS = sd.sIII / 2.0 + sd.sIV / 4.0;
+                check(std::fabs(curv - curvS) < 0.01 * std::fabs(curvS),
+                      "wavefront: rho^2 term = S_III/2 + S_IV/4 (1%)");
+                // 主光線基準なのでべき級数に ρcosφ (傾き) の項は無い。Fringe の
+                // Z8 = (3ρ³ − 2ρ)sinθ が −2ρ を含むので、その分だけ Z3 = 2·Z8。
+                // 無限遠物体の光路長を入射平面波の波面から測り忘れると、
+                // 斜入射で始点の面がずれた分がここへ傾きとして乗る
+                check(std::fabs(z2.c[2] - 2.0 * z2.c[7]) < 0.001 * std::fabs(z2.c[7]),
+                      "wavefront: no pure tilt about the chief ray (Z3 = 2*Z8)");
+                check(std::fabs(z2.c[5]) < 1e-6 * std::fabs(z2.c[4])
+                          && std::fabs(z2.c[6]) < 1e-6 * std::fabs(z2.c[7]),
+                      "wavefront: field along y gives no x-coma / 45-deg astigmatism");
+            }
+        }
+        check(relErr[1] < 0.005, "wavefront: spherical W040 = 6*Z9 = S_I/8 at F/25 (0.5%)");
+        check(relErr[1] < relErr[0], "wavefront: higher-order difference shrinks with aperture");
+    }
+
+    // ── (3) Zernike の当てはめは合成した係数を厳密に返す ────────────────────
+    {
+        const double cTrue[9] = { 0.3, -0.1, 0.2, 0.05, -0.07, 0.02, 0.04, -0.03, 0.06 };
+        std::vector<double> px, py, w;
+        for (int iy = 0; iy < 25; ++iy)
+            for (int ix = 0; ix < 25; ++ix) {
+                const double x = -1 + ix / 12.0, y = -1 + iy / 12.0;
+                if (x * x + y * y > 1.0) continue;
+                double v = 0.0;
+                for (int j = 0; j < 9; ++j) v += cTrue[j] * wavefront::fringeZernike(j + 1, x, y);
+                px.push_back(x); py.push_back(y); w.push_back(v);
+            }
+        const wavefront::ZernikeFit z = wavefront::fitFringe(px, py, w);
+        double err = 0.0;
+        for (int j = 0; j < 9; ++j) err = std::max(err, std::fabs(z.c[j] - cTrue[j]));
+        check(z.valid && err < 1e-12 && z.residualRms < 1e-12,
+              "wavefront: Fringe fit recovers synthetic coefficients exactly");
+        check(!wavefront::fitFringe({ 0.0 }, { 0.0 }, { 1.0 }).valid,
+              "wavefront: fit with fewer points than terms rejected");
+    }
+
+    // ── (4) 不正入力 ───────────────────────────────────────────────────────
+    {
+        raytrace::System s;
+        check(!wavefront::wavefrontMap(s, 4.0, 0.0, 21).valid, "wavefront: empty system rejected");
+    }
+}
+
 static void testMtf()
 {
     g_file = "mtf";
@@ -28038,6 +28176,7 @@ int main(int argc, char *argv[])
     testRayPaths();
     testCourantFromAccuracy();
     testMtf();
+    testWavefront();
     testEncircledEnergy();
     testDistortionGrid();
     testFieldCurvature();

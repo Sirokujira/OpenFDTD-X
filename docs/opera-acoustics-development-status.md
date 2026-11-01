@@ -135,7 +135,7 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   実カーネル接続 `OFDX_OFD_BIN` / `OFDX_BELLHOP_BIN` で測定。カーネル無し・
   `USE_HDF5=OFF` の既定ビルドでは 11,258)。
   **現在値 (2026-11-01 実測、`USE_HDF5=ON` / カーネル無し):
-  `ofdx_selftest` = 24 files loaded, 11,724 checks, 0 failures /
+  `ofdx_selftest` = 24 files loaded, 11,746 checks, 0 failures /
   `ctest` = 23 テスト 0 failures (checks 合計 1,911)**。
   内訳の変化は負債 #5 (C API api_version 2) の `test_c_api` +242 (281 checks)、
   負債 #6 (WAV ストリーミング読み) の `test_wav` +14 (66 checks)、
@@ -145,7 +145,9 @@ G = 10log10(∫p²dt/∫p₁₀²dt) を実装。分母は「同じ音源を自�
   (負債 #15) の `vocal-async` +16、可変音響の一括解析 (`var-acoustics`、
   Sabine の閉形式と面積不足・S 超過の判定) +18、main の光 RCWA 拡張 (#125) +286、
   薄膜の層内電界分布 (`thinfilm-field`、定在波の閉形式・界面の連続・
-  分布の体積積分による吸収 = 1 − R − T) +31。
+  分布の体積積分による吸収 = 1 − R − T) +31、レンズの波面収差マップ
+  (`lens-wavefront`、デカルトの楕円面で無収差・Welford の 3 次展開と Seidel 和の
+  一致・Zernike の厳密復元) +22。
 - 音響コア: `ctest` の `acoustics.*` **21 テスト / 合計 1,900 checks,
   0 failures** (2026-10-18 実測。残り 2 本は `roomac.fitzroy` 11 checks と
   `kernel.runner_mpi`。従来の「15 テスト / 1292」はテスト追加を反映して

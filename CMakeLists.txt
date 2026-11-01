@@ -399,6 +399,9 @@ set(CORE_SOURCES
     # LensEditorTab のスポットダイアグラム / 光線収差図の計算実体
     src/optics/RayTrace.cpp
     src/optics/RayTrace.h
+    # 実光線追跡による波面収差 (OPD) と Zernike 展開 — LensEditorTab の波面マップ
+    src/optics/Wavefront.cpp
+    src/optics/Wavefront.h
 
     # 非順次 (照明系) モンテカルロ・レイトレーサ — Qt 非依存。
     # IlluminationTab の配光量 (全光束・光学効率・ビーム角・均斉度) の計算実体

@@ -11,6 +11,7 @@
 #include "../optics/Mtf.h"
 #include "../optics/RayTrace.h"
 #include "../optics/SeidelAberration.h"
+#include "../optics/Wavefront.h"
 #include "../widgets/MiniPlot.h"
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
@@ -289,14 +290,48 @@ const bool s_i18n = [] {
               "MTF (modulation transfer function)");
     I18n::reg("lde_an_result", "解析結果 (実光線追跡)",
               "Analysis result (real ray trace)");
-    I18n::reg("lde_an_why",
-              "波面 (Zernike) は未実装です。スポットダイアグラム・レイファン・"
-              "色収差・MTF・包絡エネルギー・歪曲格子・像面湾曲は実光線追跡で"
-              "計算します。",
-              "The wavefront (Zernike) map is not implemented. The spot "
-              "diagram, the ray fan, the chromatic focal shift, the MTF, the "
-              "encircled energy, the distortion grid and the field curvature "
-              "are computed by real ray tracing.");
+    I18n::reg("lde_wf_bad",
+              "波面は射出瞳と実光線追跡が要ります。面テーブルが解けないか、"
+              "射出瞳が無限遠 (像側テレセントリック) で参照球面の半径が"
+              "決まらないか、追跡できた光線がありません。",
+              "The wavefront needs an exit pupil and a successful ray trace. "
+              "The surface table cannot be solved, the exit pupil is at "
+              "infinity (image-side telecentric) so the reference sphere has "
+              "no radius, or no ray could be traced.");
+    I18n::reg("lde_wf_axis",  "軸上", "on axis");
+    I18n::reg("lde_wf_field", "視野端 %1°", "field edge %1°");
+    I18n::reg("lde_wf_res",
+              "%1: P-V %2 λ / RMS %3 λ (ピストン除去)。Fringe Zernike [λ]: "
+              "Z4 焦点 %4、Z5/Z6 非点 %5 / %6、Z7/Z8 コマ %7 / %8、Z9 球面 %9、"
+              "9 項で表せない残り RMS %10 λ。追跡 %11 本",
+              "%1: P-V %2 λ / RMS %3 λ (piston removed). Fringe Zernike [λ]: "
+              "Z4 focus %4, Z5/Z6 astigmatism %5 / %6, Z7/Z8 coma %7 / %8, "
+              "Z9 spherical %9, residual beyond 9 terms RMS %10 λ. %11 rays traced");
+    I18n::reg("lde_wf_vignetted",
+              " (瞳内の %1 本はケラレ等で追跡できず、マップから抜けています)",
+              " (%1 rays inside the pupil could not be traced — vignetted, for "
+              "example — and are missing from the map)");
+    I18n::reg("lde_wf_seidel",
+              "3 次収差 (近軸の Seidel 和) との照合: 軸上の球面収差 W040 = 6·Z9 = "
+              "%1 λ、Seidel の S_I/8 = %2 λ (差は 5 次以上の高次収差)。",
+              "Check against third-order (paraxial Seidel sums): on-axis "
+              "spherical W040 = 6·Z9 = %1 λ, Seidel S_I/8 = %2 λ (the "
+              "difference is fifth and higher order).");
+    I18n::reg("lde_wf_note",
+              "▸ λ = %1 nm。W は射出瞳の参照球面 (中心 = 主光線の像点、半径 = "
+              "射出瞳中心からの距離 %2 mm) から波面までの光路長で、波面が進んで"
+              "いるときに正 (Welford の符号 — W040 = S_I/8)。主光線を基準にしている"
+              "ので傾きは入りません。瞳は近軸で、射出瞳は最終面から %3 mm。"
+              "real ray aiming をしないので、瞳収差の強い系の視野端では瞳の"
+              "標本位置がわずかに歪みます。",
+              "▸ λ = %1 nm. W is the optical path from the reference sphere at "
+              "the exit pupil (centre = image point of the chief ray, radius = "
+              "%2 mm from the exit pupil centre) to the wavefront, positive when "
+              "the wavefront leads (Welford sign — W040 = S_I/8). Referenced to "
+              "the chief ray, so it contains no tilt. The pupils are paraxial; "
+              "the exit pupil is %3 mm from the last surface. Without real ray "
+              "aiming the pupil samples are slightly distorted at the field edge "
+              "of systems with strong pupil aberration.");
     I18n::reg("lde_fc_x", "近軸像面からのずれ [mm]",
               "Shift from the paraxial image plane [mm]");
     I18n::reg("lde_fc_y", "視野半角 [deg]", "Half-field angle [deg]");
@@ -933,8 +968,12 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
         auto *b = new QPushButton(analyses[i], sAn);
         b->setFixedHeight(30);
         b->setStyleSheet("text-align:left; padding-left:8px;");
-        // スポットダイアグラムとレイファンは実光線追跡 (optics/RayTrace) で
-        // 計算する。残りは未実装なので無効化して理由を出す (絶対規則 5)。
+        // 8 つとも実光線追跡 (optics/RayTrace) か近軸追跡で計算する
+        // 波面マップは波面のボタンでだけ出す (他の解析を押したら先に隠す —
+        // Qt は接続順にスロットを呼ぶので、各解析より前にここが走る)
+        connect(b, &QPushButton::clicked, this, [this] {
+            if (m_wfView) m_wfView->setVisible(false);
+        });
         if (i == 0) connect(b, &QPushButton::clicked,
                             this, &LensEditorTab::runSpotDiagram);
         else if (i == 1) connect(b, &QPushButton::clicked,
@@ -949,10 +988,8 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
                                  this, &LensEditorTab::runDistortion);
         else if (i == 6) connect(b, &QPushButton::clicked,
                                  this, &LensEditorTab::runChromatic);
-        else {
-            tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
-            b->setToolTip(I18n::tr("lde_an_why"));
-        }
+        else connect(b, &QPushButton::clicked,
+                     this, &LensEditorTab::runWavefront);
         grid->addWidget(b, i / 2, i % 2);
     }
     sAn->vbox()->addLayout(grid);
@@ -963,6 +1000,9 @@ LensEditorTab::LensEditorTab(Project *project, QWidget *parent)
     m_spotView = new SpotDiagramView(sAr);
     m_spotView->setVisible(false);
     sAr->vbox()->addWidget(m_spotView);
+    m_wfView = new WavefrontMapView(sAr);
+    m_wfView->setVisible(false);
+    sAr->vbox()->addWidget(m_wfView);
     m_fanPlot = new MiniPlot(sAr);
     m_fanPlot->setMinimumHeight(190);
     m_fanPlot->setLabels(I18n::tr("lde_an_xpupil"), I18n::tr("lde_an_yta"));
@@ -1424,6 +1464,97 @@ void LensEditorTab::recomputeParaxial()
 }
 
 // ── スポットダイアグラム表示 (等倍散布図 + エアリー円) ─────────────────────
+WavefrontMapView::WavefrontMapView(QWidget *parent) : QWidget(parent)
+{
+    setMinimumHeight(220);
+}
+
+void WavefrontMapView::setPanels(const QVector<Panel> &panels)
+{
+    m_panels = panels;
+    update();
+}
+
+void WavefrontMapView::clear()
+{
+    m_panels.clear();
+    update();
+}
+
+namespace {
+// 発散色: −1 = 青、0 = 白、+1 = 赤
+QColor divergingColor(double t)
+{
+    t = std::max(-1.0, std::min(1.0, t));
+    const QColor neg(0x21, 0x66, 0xAC), pos(0xB2, 0x18, 0x2B);
+    const QColor &e = (t < 0.0) ? neg : pos;
+    const double a = std::fabs(t);
+    return QColor(int(255 + (e.red()   - 255) * a),
+                  int(255 + (e.green() - 255) * a),
+                  int(255 + (e.blue()  - 255) * a));
+}
+} // namespace
+
+void WavefrontMapView::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.fillRect(rect(), palette().base());
+    p.setPen(QPen(palette().mid().color(), 1));
+    p.drawRect(rect().adjusted(0, 0, -1, -1));
+    if (m_panels.isEmpty()) return;
+
+    // 全パネル共通の色スケール (±最大 |W|)
+    double vmax = 0.0;
+    for (const Panel &pn : m_panels)
+        for (double w : pn.waves) vmax = std::max(vmax, std::fabs(w));
+    if (!(vmax > 0.0)) vmax = 1e-6;
+
+    const int barW = 56;
+    const int k = m_panels.size();
+    const int titleH = 18;
+    const double cellW = double(width() - barW - 10) / k;
+    const double side = std::min(cellW - 12.0, double(height() - titleH - 14));
+    if (side <= 10.0) return;
+
+    QFont f = p.font();
+    f.setPointSizeF(std::max(7.0, f.pointSizeF() - 1.0));
+    p.setFont(f);
+    for (int i = 0; i < k; ++i) {
+        const Panel &pn = m_panels[i];
+        const QPointF org(8 + cellW * (i + 0.5), titleH + 6 + side * 0.5);
+        p.setPen(palette().text().color());
+        p.drawText(QRectF(org.x() - cellW * 0.5, 2, cellW, titleH),
+                   Qt::AlignCenter, pn.title);
+        if (pn.n < 2) continue;
+        // 格子 1 マス = 瞳座標で 2/(n−1)
+        const double cell = side / (pn.n - 1);
+        p.setPen(Qt::NoPen);
+        for (int j = 0; j < pn.pupil.size() && j < pn.waves.size(); ++j) {
+            p.setBrush(divergingColor(pn.waves[j] / vmax));
+            const double cx = org.x() + pn.pupil[j].x() * side * 0.5;
+            const double cy = org.y() - pn.pupil[j].y() * side * 0.5;
+            p.drawRect(QRectF(cx - cell * 0.5, cy - cell * 0.5, cell + 0.6, cell + 0.6));
+        }
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(palette().mid().color(), 1));
+        p.drawEllipse(org, side * 0.5 + cell * 0.5, side * 0.5 + cell * 0.5);
+    }
+
+    // カラーバー
+    const QRectF bar(width() - barW + 4, titleH + 6, 12, side);
+    for (int y = 0; y < int(bar.height()); ++y) {
+        const double t = 1.0 - 2.0 * y / std::max(1.0, bar.height() - 1);
+        p.setPen(divergingColor(t));
+        p.drawLine(QPointF(bar.left(), bar.top() + y), QPointF(bar.right(), bar.top() + y));
+    }
+    p.setPen(palette().text().color());
+    const QString top = QStringLiteral("+%1 λ").arg(QString::number(vmax, 'g', 3));
+    const QString bot = QStringLiteral("−%1 λ").arg(QString::number(vmax, 'g', 3));
+    p.drawText(QPointF(bar.right() + 3, bar.top() + 8), top);
+    p.drawText(QPointF(bar.right() + 3, bar.center().y() + 4), QStringLiteral("0"));
+    p.drawText(QPointF(bar.right() + 3, bar.bottom()), bot);
+}
+
 SpotDiagramView::SpotDiagramView(QWidget *parent) : QWidget(parent)
 {
     setMinimumHeight(220);
@@ -2299,6 +2430,103 @@ void LensEditorTab::runMtf()
                           .arg(int(sp.x.size()))
                           .arg(QString::number(sp.rmsRadius, 'f', 4))
                       + I18n::tr("lde_mtf_note"));
+}
+
+void LensEditorTab::runWavefront()
+{
+    const double epd = epdValue();
+    const double field = fieldValue();
+    if (m_waves.isEmpty()) m_waves = { 587.6 };
+    double primary = m_waves.first();
+    for (double w : m_waves)
+        if (std::fabs(w - 587.6) < std::fabs(primary - 587.6)) primary = w;
+    const double lam_mm = primary * 1e-6;
+
+    double imageDistance = -1.0;
+    const std::vector<paraxial::Surface> surfs =
+        collectSurfaces(&imageDistance, nullptr, primary * 1e-3);
+    raytrace::System sys;
+    sys.surfaces = raytrace::fromParaxial(surfs);
+    sys.imageDistance = (imageDistance >= 0.0)
+                            ? imageDistance
+                            : (surfs.empty() ? 0.0 : surfs.back().thickness);
+
+    // 軸上と視野端 (視野が 0 なら軸上だけ)
+    QVector<double> fields = { 0.0 };
+    if (field > 0.0) fields << field;
+    QVector<WavefrontMapView::Panel> panels;
+    QStringList lines;
+    double axisZ9 = 0.0, xp = 0.0, refR = 0.0;
+    bool axisOk = false;
+    for (double fd : fields) {
+        const wavefront::Map m = wavefront::wavefrontMap(sys, epd, fd, 41);
+        if (!m.valid) continue;
+        const wavefront::ZernikeFit z = wavefront::fitFringe(m.px, m.py, m.w_mm);
+        if (!z.valid) continue;
+        const QString name = (fd == 0.0)
+            ? I18n::tr("lde_wf_axis")
+            : I18n::tr("lde_wf_field").arg(QString::number(fd, 'f', 1));
+        WavefrontMapView::Panel pn;
+        pn.n = m.n;
+        pn.title = name;
+        for (std::size_t i = 0; i < m.w_mm.size(); ++i) {
+            pn.pupil << QPointF(m.px[i], m.py[i]);
+            pn.waves << m.w_mm[i] / lam_mm;
+        }
+        if (panels.isEmpty()) {          // 射出瞳と参照球面は最初の 1 枚から
+            xp = m.exitPupilZ;
+            refR = m.refRadius;
+        }
+        panels << pn;
+        // 表示桁 (1e-4 λ) より小さい値は 0 と書く ("-0.0000" を出さない)
+        auto wv = [&](double mm) {
+            const double v = mm / lam_mm;
+            return QString::number(std::fabs(v) < 5e-5 ? 0.0 : v, 'f', 4);
+        };
+        lines << I18n::tr("lde_wf_res")
+                     .arg(name, wv(m.pv_mm), wv(m.rms_mm), wv(z.c[3]), wv(z.c[4]),
+                          wv(z.c[5]), wv(z.c[6]), wv(z.c[7]), wv(z.c[8]))
+                     .arg(wv(z.residualRms))
+                     .arg(m.traced)
+                 + (m.failed > 0 ? I18n::tr("lde_wf_vignetted").arg(m.failed)
+                                 : QString());
+        if (fd == 0.0) {
+            axisOk = true;
+            axisZ9 = z.c[8];
+        }
+    }
+    if (panels.isEmpty()) {
+        m_fanPlot->setVisible(false);
+        m_spotView->setVisible(false);
+        m_wfView->setVisible(false);
+        m_anInfo->setText(I18n::tr("lde_wf_bad"));
+        return;
+    }
+    // 軸上の球面収差を 3 次収差 (近軸の Seidel 和) と突き合わせて見せる
+    if (axisOk) {
+        const seidel::Result sr = seidel::analyze(surfs, epd, 0.0);
+        if (sr.valid)
+            lines << I18n::tr("lde_wf_seidel")
+                         .arg(QString::number(6.0 * axisZ9 / lam_mm, 'f', 4),
+                              QString::number(sr.sI / 8.0 / lam_mm, 'f', 4));
+    }
+    // 像面が近軸焦点からずれていれば Z4 (焦点) が支配的になる — スポットと
+    // 同じ判定・同じ文言で知らせる
+    const paraxial::SystemData pd = paraxial::analyze(surfs, imageDistance, epd, field);
+    const double airy = (pd.valid && pd.fnumber > 0.0)
+                            ? 1.22 * primary * 1e-6 * pd.fnumber : 0.0;
+    const QString defocus = defocusNote(pd, airy);
+    if (!defocus.isEmpty()) lines << defocus.trimmed();
+    m_wfView->setPanels(panels);
+    m_wfView->setVisible(true);
+    m_fanPlot->setVisible(false);
+    m_spotView->setVisible(false);
+    m_anInfo->setText(lines.join(QStringLiteral("\n"))
+                      + QStringLiteral("\n")
+                      + I18n::tr("lde_wf_note")
+                            .arg(QString::number(primary, 'f', 1),
+                                 QString::number(refR, 'f', 2),
+                                 QString::number(xp, 'f', 2)));
 }
 
 void LensEditorTab::runChromatic()

@@ -81,6 +81,13 @@ struct RayResult {
     double opl = 0.0;             // 光路長 Σ n·d [mm]
     double maxIncidenceDeg = 0.0; // 各面の入射角の最大値 [deg]
     int    failedSurface = -1;    // 失敗した面の添字 (成功なら −1)
+    // 波面 (OPD) を組むための追加情報 (optics/Wavefront が使う)
+    double L = 0.0, M = 0.0, N = 1.0; // 像空間での方向余弦
+    double nImage = 1.0;              // 像空間の屈折率
+    // 入射波面からの光路長 [mm]。無限遠物体では opl の始点 (z = 一定の面) が
+    // 入射平面波の波面 (方向に垂直な面) と一致しないので、原点を通る波面
+    // からの長さに直したもの。有限物体では物体点から測るので opl と同じ
+    double oplWave = 0.0;
     bool   ok() const { return status == Status::Ok; }
 };
 
