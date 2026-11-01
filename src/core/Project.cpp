@@ -22,10 +22,42 @@ bool ofd::isValidPowerSweepRange(double pmin_W, double pmax_W)
 // ── 光ドメイン: RCWA 層スタックの妥当性 ─────────────────────────────────────
 bool ofd::isValidRcwaLayer(const RcwaLayer &layer)
 {
-    return std::isfinite(layer.eps1) && layer.eps1 > 0.0 &&
-           std::isfinite(layer.eps2) && layer.eps2 > 0.0 &&
+    // 実部が負 (金属) は損失 (虚部 > 0) があるときだけ受け付ける。
+    // カーネルは「実部も虚部もゼロ」と「負の虚部 (利得)」だけを弾く。
+    auto epsOk = [](double re, double im) {
+        return std::isfinite(re) && std::isfinite(im) && im >= 0.0 &&
+               (re > 0.0 || im > 0.0);
+    };
+    return epsOk(layer.eps1, layer.eps1i) && epsOk(layer.eps2, layer.eps2i) &&
            std::isfinite(layer.fill) && layer.fill >= 0.0 && layer.fill <= 1.0 &&
+           std::isfinite(layer.fill_y) && layer.fill_y >= 0.0 && layer.fill_y <= 1.0 &&
            std::isfinite(layer.thickness_nm) && layer.thickness_nm >= 0.0;
+}
+
+bool ofd::isValidRcwaPole(const RcwaPole &pole, int nLayers)
+{
+    return pole.layer >= 1 && pole.layer <= nLayers &&
+           (pole.side == 1 || pole.side == 2) &&
+           std::isfinite(pole.einf) && std::isfinite(pole.ae_rad_s) &&
+           std::isfinite(pole.be_rad_s) && pole.be_rad_s >= 0.0 &&
+           std::isfinite(pole.ce_rad_s) && pole.ce_rad_s >= 0.0;
+}
+
+bool ofd::isValidRcwaConfig(const QVector<RcwaLayer> &layers,
+                            const QVector<RcwaPole> &poles)
+{
+    if (!isValidRcwaStack(layers)) return false;
+    for (const RcwaPole &q : poles)
+        if (!isValidRcwaPole(q, layers.size())) return false;
+    return true;
+}
+
+bool ofd::rcwaNeeds2D(bool rcwa2d, const QVector<RcwaLayer> &layers)
+{
+    if (rcwa2d) return true;
+    for (const RcwaLayer &l : layers)
+        if (l.fill_y < 1.0) return true;
+    return false;
 }
 
 bool ofd::isValidRcwaStack(const QVector<RcwaLayer> &layers)

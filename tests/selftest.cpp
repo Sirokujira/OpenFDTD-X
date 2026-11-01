@@ -819,6 +819,20 @@ static void compareProjects(const Project &a, const Project &b)
               nearlyEq(x.fill, y.fill) &&
               nearlyEq(x.thickness_nm, y.thickness_nm),
               "rcwalayer params round-trip");
+        check(nearlyEq(x.eps1i, y.eps1i) && nearlyEq(x.eps2i, y.eps2i) &&
+              nearlyEq(x.fill_y, y.fill_y),
+              "rcwalayer loss / fill_y round-trip");
+    }
+    check(oa.rcwa2d == ob.rcwa2d, "rcwa 2D flag round-trip");
+    check(oa.rcwaPoles.size() == ob.rcwaPoles.size(),
+          "rcwadispersion count round-trip");
+    for (int i = 0; i < qMin(oa.rcwaPoles.size(), ob.rcwaPoles.size()); ++i) {
+        const RcwaPole &x = oa.rcwaPoles[i], &y = ob.rcwaPoles[i];
+        check(x.layer == y.layer && x.side == y.side &&
+              nearlyEq(x.einf, y.einf) && nearlyEq(x.ae_rad_s, y.ae_rad_s) &&
+              nearlyEq(x.be_rad_s, y.be_rad_s) &&
+              nearlyEq(x.ce_rad_s, y.ce_rad_s),
+              "rcwadispersion params round-trip");
     }
 }
 
@@ -5402,6 +5416,253 @@ static void testOnnActivation()
     }
 }
 
+// RCWA の拡張キー (OpenRCWA の 2D 格子・損失・分散) — .ofd/.ofdx 永続化。
+// キー仕様は OpenRCWA/sol/input_data.c が正:
+//   rcwa           = <Nx> <Λx[m]> [<Ny> <Λy[m]>]
+//   rcwalayer      = <eps1r> <eps2r> <fill> <厚さ[m]> [<eps1i> <eps2i> [<fill_y>]]
+//   rcwadispersion = <layer> <side> <einf> <ae> <be> <ce>   [rad/s]
+// 既定値のままなら .ofd / .ofdx の出力は従来と 1 バイトも変えない。
+static void testRcwaExtensions()
+{
+    g_file = "rcwa-ext";
+    auto stack3 = [] {
+        return QVector<RcwaLayer>{ RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                                   RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                                   RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+    };
+
+    // (a) 妥当性: 損失のある金属 (実部負・虚部正) は有効、利得 (虚部負) は無効
+    {
+        RcwaLayer metal{ -17.74, -17.74, 0.5, 30.0 };
+        metal.eps1i = metal.eps2i = 0.18;
+        check(isValidRcwaLayer(metal), "rcwa-ext: lossy metal layer valid");
+        RcwaLayer gain{ 2.25, 2.25, 0.5, 30.0 };
+        gain.eps1i = -0.1;
+        check(!isValidRcwaLayer(gain), "rcwa-ext: gain (negative imag) invalid");
+        RcwaLayer lossless{ -1.0, 2.25, 0.5, 0.0 };
+        check(!isValidRcwaLayer(lossless),
+              "rcwa-ext: negative real eps without loss still invalid");
+        RcwaLayer fy{ 1.0, 1.0, 0.5, 0.0 };
+        fy.fill_y = 1.5;
+        check(!isValidRcwaLayer(fy), "rcwa-ext: fill_y > 1 invalid");
+        fy.fill_y = 0.0;
+        check(isValidRcwaLayer(fy), "rcwa-ext: fill_y 0 valid");
+        RcwaPole q;                     // 既定: 層 1, eps1, einf=1
+        check(isValidRcwaPole(q, 3), "rcwa-ext: default pole valid");
+        q.layer = 4;
+        check(!isValidRcwaPole(q, 3), "rcwa-ext: pole layer out of range invalid");
+        q.layer = 2; q.side = 3;
+        check(!isValidRcwaPole(q, 3), "rcwa-ext: pole side 3 invalid");
+        q.side = 2; q.be_rad_s = -1.0;
+        check(!isValidRcwaPole(q, 3), "rcwa-ext: pole negative be (gain) invalid");
+        q.be_rad_s = 0.0; q.ce_rad_s = -1.0;
+        check(!isValidRcwaPole(q, 3), "rcwa-ext: pole negative ce invalid");
+    }
+
+    // (b) 既定値のままなら出力は従来どおり (1D・虚部なし・分散なし)
+    {
+        Project p;
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaNx = 5;
+        o.rcwaPeriodX = 300.0;
+        o.rcwaNy = 7;                   // rcwa2d=false なら書かれない
+        o.rcwaPeriodY = 400.0;
+        o.rcwaLayerList = stack3();
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwa = 5 3e-07\n"),
+              "rcwa-ext: 1D rcwa line unchanged by default");
+        check(out.contains("\nrcwalayer = 4 1 0.5 2e-07\n"),
+              "rcwa-ext: rcwalayer line unchanged by default");
+        check(!out.contains("rcwadispersion"),
+              "rcwa-ext: no rcwadispersion line by default");
+    }
+
+    // (c) 損失 (虚部) は組で書き、fill_y は既定なら書かない
+    {
+        Project p;
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaNx = 5;
+        o.rcwaPeriodX = 300.0;
+        o.rcwaLayerList = stack3();
+        o.rcwaLayerList[1].eps1i = 0.25;
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwa = 5 3e-07\n"), "rcwa-ext: lossy layer keeps 1D");
+        check(out.contains("\nrcwalayer = 4 1 0.5 2e-07 0.25 0\n"),
+              "rcwa-ext: imaginary parts written as a pair");
+        check(out.contains("\nrcwalayer = 1 1 0.5 0\n"),
+              "rcwa-ext: lossless layer line unchanged");
+    }
+
+    // (d) 2D: fill_y < 1 の層があれば Ny Λy を書く (rcwa2d に関わらず)
+    {
+        Project p;
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaNx = 4;
+        o.rcwaNy = 3;
+        o.rcwaPeriodX = 500.0;
+        o.rcwaPeriodY = 400.0;
+        o.rcwaLayerList = stack3();
+        o.rcwaLayerList[1].fill_y = 0.6;
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwa = 4 5e-07 3 4e-07\n"),
+              "rcwa-ext: fill_y < 1 forces 2D rcwa line");
+        check(out.contains("\nrcwalayer = 4 1 0.5 2e-07 0 0 0.6\n"),
+              "rcwa-ext: fill_y written after the imaginary pair");
+
+        // rcwa2d だけを立てても 2D (層は y 一様のまま)
+        o.rcwaLayerList = stack3();
+        o.rcwa2d = true;
+        const QString out2 = OfdIO::serialize(p);
+        check(out2.contains("\nrcwa = 4 5e-07 3 4e-07\n"),
+              "rcwa-ext: 2D flag writes Ny and period_y");
+        check(out2.contains("\nrcwalayer = 4 1 0.5 2e-07\n"),
+              "rcwa-ext: y-uniform layers keep the short form in 2D");
+
+        // FMM は x/y とも fmmHarmonics
+        o.solver = OpticalSolver::FMM;
+        o.fmmHarmonics = 9;
+        check(OfdIO::serialize(p).contains("\nrcwa = 9 5e-07 9 4e-07\n"),
+              "rcwa-ext: FMM 2D uses fmmHarmonics for both axes");
+    }
+
+    // (e) 分散極: rcwadispersion 行。不正な極があれば RCWA 設定を丸ごと出さない
+    {
+        Project p;
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaNx = 2;
+        o.rcwaPeriodX = 500.0;
+        o.rcwaLayerList = stack3();
+        RcwaPole q;
+        q.layer = 2; q.side = 1; q.einf = 1.0;
+        q.ae_rad_s = 1.36e16; q.be_rad_s = 3.0e13; q.ce_rad_s = 0.0;
+        o.rcwaPoles = { q };
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwadispersion = 2 1 1 1.36e+16 3e+13 0\n"),
+              "rcwa-ext: rcwadispersion line emitted");
+        check(out.indexOf("rcwadispersion") > out.lastIndexOf("rcwalayer"),
+              "rcwa-ext: rcwadispersion written after the layers");
+        check(out.startsWith("OpenRCWA 4 2\n"), "rcwa-ext: header stays OpenRCWA");
+
+        o.rcwaPoles[0].layer = 9;       // 範囲外
+        Project legacy;
+        legacy.optical().solver = OpticalSolver::RCWA;
+        legacy.optical().rcwaNx = 2;
+        legacy.optical().rcwaPeriodX = 500.0;
+        check(OfdIO::serialize(p) == OfdIO::serialize(legacy),
+              "rcwa-ext: invalid pole keeps output byte-identical (no RCWA)");
+        check(!isValidRcwaConfig(o.rcwaLayerList, o.rcwaPoles),
+              "rcwa-ext: config with an invalid pole is invalid");
+    }
+
+    // (f) .ofd の読み込み → 再シリアライズで一致 (2D / 損失 / 分散)
+    {
+        const QString text =
+            "OpenRCWA 4 2\n"
+            "rcwa = 4 5.0e-7 3 4.0e-7\n"
+            "rcwalayer = 1.0 1.0 0.5 0\n"
+            "rcwalayer = 2.25 1.0 0.6 2.0e-7 0.1 0 0.4\n"
+            "rcwalayer = 2.25 2.25 0.5 0\n"
+            "rcwadispersion = 2 1 1.0 1.36e16 3.0e13 0.0\n"
+            "rcwadispersion = 2 2 2.0 3.0e15 2.0e14 4.0e15\n"
+            "end\n";
+        Project p;
+        QString err;
+        check(OfdIO::parse(text, p, &err), "rcwa-ext: parse extended rcwa file");
+        const OpticalOpts &o = p.optical();
+        check(o.rcwa2d && o.rcwaNx == 4 && o.rcwaNy == 3 &&
+              nearlyEq(o.rcwaPeriodX, 500.0) && nearlyEq(o.rcwaPeriodY, 400.0),
+              "rcwa-ext: 2D rcwa line parsed (m -> nm)");
+        check(o.rcwaLayerList.size() == 3, "rcwa-ext: three layers parsed");
+        if (o.rcwaLayerList.size() == 3)
+            check(nearlyEq(o.rcwaLayerList[1].eps1i, 0.1) &&
+                  nearlyEq(o.rcwaLayerList[1].eps2i, 0.0) &&
+                  nearlyEq(o.rcwaLayerList[1].fill_y, 0.4) &&
+                  nearlyEq(o.rcwaLayerList[0].fill_y, 1.0),
+                  "rcwa-ext: imaginary parts and fill_y parsed");
+        check(o.rcwaPoles.size() == 2, "rcwa-ext: two poles parsed");
+        if (o.rcwaPoles.size() == 2)
+            check(o.rcwaPoles[1].layer == 2 && o.rcwaPoles[1].side == 2 &&
+                  nearlyEq(o.rcwaPoles[1].einf, 2.0) &&
+                  nearlyEq(o.rcwaPoles[1].ae_rad_s, 3.0e15) &&
+                  nearlyEq(o.rcwaPoles[1].be_rad_s, 2.0e14) &&
+                  nearlyEq(o.rcwaPoles[1].ce_rad_s, 4.0e15),
+                  "rcwa-ext: pole parameters parsed");
+        check(p.extraLines().isEmpty(),
+              "rcwa-ext: extended keys not duplicated into extraLines");
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwa = 4 5e-07 3 4e-07\n") &&
+              out.contains("\nrcwalayer = 2.25 1 0.6 2e-07 0.1 0 0.4\n") &&
+              out.contains("\nrcwadispersion = 2 2 2 3e+15 2e+14 4e+15\n"),
+              "rcwa-ext: reserialize keeps the extended keys");
+        Project p2;
+        check(OfdIO::parse(out, p2, &err), "rcwa-ext: reparse");
+        compareProjects(p, p2);
+    }
+
+    // (g) .ofdx: 新キーのラウンドトリップ / 既定値ならキーを書かない / 旧ファイル互換
+    {
+        Project p1;
+        OpticalOpts &o = p1.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaLayerList = stack3();
+        const QJsonObject plain = QJsonDocument::fromJson(OfdxIO::serialize(p1))
+                                      .object().value("optical").toObject()
+                                      .value("rcwa").toObject();
+        check(!plain.contains("two_d") && !plain.contains("dispersion"),
+              "rcwa-ext ofdx: no new rcwa keys by default");
+        check(!plain.value("layer_list").toArray().at(1).toObject().contains("eps1i") &&
+              !plain.value("layer_list").toArray().at(1).toObject().contains("fill_y"),
+              "rcwa-ext ofdx: no new layer keys by default");
+
+        o.rcwa2d = true;
+        o.rcwaLayerList[1].eps1i = 0.3;
+        o.rcwaLayerList[1].fill_y = 0.7;
+        RcwaPole q;
+        q.layer = 2; q.side = 2; q.ae_rad_s = 1e15; q.be_rad_s = 1e13;
+        o.rcwaPoles = { q };
+        QTemporaryFile f;
+        f.setFileTemplate(QDir::tempPath() + "/ofdx_rcwa_ext_XXXXXX.ofdx");
+        if (f.open()) {
+            check(OfdxIO::save(f.fileName(), p1), "rcwa-ext ofdx save");
+            Project p2;
+            check(OfdxIO::load(f.fileName(), p2), "rcwa-ext ofdx load");
+            const OpticalOpts &r = p2.optical();
+            check(r.rcwa2d, "rcwa-ext ofdx 2D flag");
+            check(r.rcwaLayerList.size() == 3 &&
+                  nearlyEq(r.rcwaLayerList[1].eps1i, 0.3) &&
+                  nearlyEq(r.rcwaLayerList[1].fill_y, 0.7),
+                  "rcwa-ext ofdx layer loss / fill_y");
+            check(r.rcwaPoles.size() == 1 && r.rcwaPoles[0].layer == 2 &&
+                  r.rcwaPoles[0].side == 2 &&
+                  nearlyEq(r.rcwaPoles[0].ae_rad_s, 1e15) &&
+                  nearlyEq(r.rcwaPoles[0].be_rad_s, 1e13),
+                  "rcwa-ext ofdx poles");
+        }
+
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_rcwa_ext_old_XXXXXX.ofdx");
+        if (old.open()) {
+            old.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                      "  \"optical\": { \"solver\": 1, \"rcwa\": { \"nx\": 5,"
+                      "   \"layer_list\": [ {\"eps1\": 1, \"eps2\": 1, \"fill\": 0.5,"
+                      "   \"thickness_nm\": 0} ] } } }");
+            old.flush();
+            Project p3;
+            check(OfdxIO::load(old.fileName(), p3), "rcwa-ext legacy ofdx load");
+            const OpticalOpts &r = p3.optical();
+            check(!r.rcwa2d && r.rcwaPoles.isEmpty() &&
+                  r.rcwaLayerList.size() == 1 &&
+                  r.rcwaLayerList[0].eps1i == 0.0 &&
+                  r.rcwaLayerList[0].fill_y == 1.0,
+                  "rcwa-ext legacy ofdx leaves new fields at defaults");
+        }
+    }
+}
+
 // RCWA コア設定 (OpenRCWA の rcwa / rcwalayer キー) — .ofd/.ofdx 永続化。
 // キー仕様は OpenRCWA/sol/input_data.c が正: 単位は m、GUI は nm で保持する。
 static void testRcwaCore()
@@ -9525,6 +9786,109 @@ static void testAntennaH5()
         check(s2.size() == 6, "anth5: pattern-only keeps every pattern column");
     }
 #endif
+}
+
+// ── OpenRCWA (orcwa) 統合: 2D 格子・損失・分散 ──────────────────────────────
+// 環境変数 OFDX_ORCWA_BIN が指す実カーネルがあれば、GUI のモデルで組んだ
+// RCWA 設定を OfdIO で書き出して実際に解かせ、物理的に成り立つ関係で結果を
+// 確かめる (キー書式の取り違えはカーネルの入力エラーか結果の破れで出る)。
+static void testOrcwaIntegration()
+{
+    g_file = "orcwa_integration";
+    const QString bin = qEnvironmentVariable("OFDX_ORCWA_BIN");
+    if (bin.isEmpty() || !QFileInfo::exists(bin)) {
+        std::printf("  (orcwa integration skipped: "
+                    "set OFDX_ORCWA_BIN to run)\n");
+        return;
+    }
+    auto runCase = [&bin](const Project &p, const QString &tag,
+                          QString *logOut) -> QString {
+        static QTemporaryDir root;
+        const QString d = root.path() + QLatin1Char('/') + tag;
+        QDir().mkpath(d);
+        QFile f(d + QStringLiteral("/in.ofd"));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Text))
+            f.write(OfdIO::serialize(p).toUtf8());
+        f.close();
+        QProcess proc;
+        proc.setWorkingDirectory(d);
+        proc.start(bin, { QStringLiteral("-n"), QStringLiteral("2"),
+                          QStringLiteral("in.ofd") });
+        check(proc.waitForFinished(300000) &&
+                  proc.exitStatus() == QProcess::NormalExit &&
+                  proc.exitCode() == 0,
+              ("orcwa: " + tag + " kernel exit code 0").toUtf8().constData());
+        QFile lg(d + QStringLiteral("/orcwa.log"));
+        if (logOut && lg.open(QIODevice::ReadOnly | QIODevice::Text))
+            *logOut = QString::fromUtf8(lg.readAll());
+        return d;
+    };
+    // Project は QObject なのでコピーできない — 参照で受けて設定する
+    auto base = [](Project &p) {
+        p.general().hasF1 = true;
+        p.general().f1min = 3.331e14;    // λ = 0.9 → 0.62 μm
+        p.general().f1max = 4.835e14;
+        p.general().f1div = 4;
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaNx = 3;
+        o.rcwaNy = 3;
+        o.rcwaPeriodX = 500.0;
+        o.rcwaPeriodY = 500.0;
+    };
+
+    // (1) 2D: 正方格子の正方形柱 (fill = fy = 0.6)。法線入射で TE = TM、R+T = 1、
+    //     回折次数の和 = 合計
+    {
+        Project p;
+        base(p);
+        RcwaLayer pillar{ 2.25, 1.0, 0.6, 200.0 };
+        pillar.fill_y = 0.6;
+        p.optical().rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 }, pillar,
+                                      RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        QString log;
+        const QString d = runCase(p, QStringLiteral("pillar2d"), &log);
+        check(log.contains("RCWA : 2D Nx=3 Ny=3"), "orcwa: 2D grating reaches the kernel");
+        const rcwa::Efficiency e = rcwa::read(d + QStringLiteral("/rcwa_efficiency.csv"));
+        check(e.points.size() == 5, "orcwa: five frequencies solved");
+        double sym = 0.0;
+        for (const rcwa::EfficiencyPoint &q : e.points)
+            sym = std::max({ sym, std::fabs(q.rTE - q.rTM), std::fabs(q.tTE - q.tTM) });
+        check(sym < 1e-6, "orcwa: square pillars at normal incidence give TE = TM");
+        check(e.valid() && e.worstEnergyError() < 1e-6,
+              "orcwa: lossless 2D grating conserves energy (R + T = 1)");
+        const rcwa::Orders ord = rcwa::readOrders(d + QStringLiteral("/rcwa_orders.csv"));
+        check(ord.valid() && ord.worstSumError(e) < 1e-7,
+              "orcwa: diffraction orders add up to the totals");
+    }
+
+    // (2) 分散: 空気 / Drude 金属 30 nm / ガラス。損失があるので R + T < 1
+    {
+        Project p;
+        base(p);
+        p.general().f1min = 4.0e14;
+        p.general().f1max = 7.0e14;
+        p.general().f1div = 6;
+        p.optical().rcwaNx = 2;
+        p.optical().rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                                      RcwaLayer{ 1.0, 1.0, 0.5, 30.0 },
+                                      RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        RcwaPole q;
+        q.layer = 2; q.einf = 1.0; q.ae_rad_s = 1.36e16; q.be_rad_s = 3.0e13;
+        q.side = 1;
+        RcwaPole q2 = q;
+        q2.side = 2;
+        p.optical().rcwaPoles = { q, q2 };
+        QString log;
+        const QString d = runCase(p, QStringLiteral("drude"), &log);
+        check(log.contains("dispersive (Lorentz) materials : 2"),
+              "orcwa: dispersion reaches the kernel");
+        const rcwa::Efficiency e = rcwa::read(d + QStringLiteral("/rcwa_efficiency.csv"));
+        bool lossy = e.points.size() == 7;
+        for (const rcwa::EfficiencyPoint &pt : e.points)
+            if (!(pt.rTE + pt.tTE < 1.0 - 1e-3 && pt.rTE > 0.5)) lossy = false;
+        check(lossy, "orcwa: the Drude film reflects strongly and absorbs (R + T < 1)");
+    }
 }
 
 // ── OpenFDTD (基幹カーネル) 統合 ────────────────────────────────────────────
@@ -20988,6 +21352,46 @@ static void testRcwaEfficiency()
     check(!re::read(QStringLiteral("/nonexistent/rcwa_efficiency.csv")).valid(),
           "rcwaeff: a missing file yields nothing (no invented values)");
 
+    // ── rcwa_orders.csv (回折次数ごと)。書式はカーネルの writer が正:
+    //   frequency[Hz],lambda[m],pol,m,n,R,T  (伝搬する次数だけ)
+    // 合計は rcwa_efficiency.csv と一致する (下の 2 周波数は e の行 1, 2 と同じ値)
+    const re::Orders ord = re::parseOrders(QStringLiteral(
+        "frequency[Hz],lambda[m],pol,m,n,R,T\n"
+        "1.0e+14,2.99792458e-06,TE,0,0,0.10,0.90\n"
+        "1.0e+14,2.99792458e-06,TM,0,0,0.20,0.80\n"
+        "2.0e+14,1.49896229e-06,TE,-1,0,0.05,0.30\n"
+        "2.0e+14,1.49896229e-06,TE,0,0,0.20,0.14\n"
+        "2.0e+14,1.49896229e-06,TE,1,0,0.00,0.30\n"
+        "2.0e+14,1.49896229e-06,TM,0,0,0.30,0.70\n"));
+    check(ord.valid() && ord.points.size() == 6,
+          "rcwaord: six order rows are read and the header is skipped");
+    check(ord.points[2].te && ord.points[2].m == -1 && ord.points[2].n == 0 &&
+          approx(ord.points[2].r, 0.05, 1e-15) && approx(ord.points[2].t, 0.30, 1e-15) &&
+          !ord.points[1].te,
+          "rcwaord: pol / m / n / R / T land in the order the kernel writes them");
+    check(approx(ord.worstSumError(e), 0.0, 1e-12),
+          "rcwaord: the orders add up to the totals in rcwa_efficiency.csv");
+    re::OrderPoint best;
+    check(ord.strongestNonSpecular(&best) && best.m == -1 &&
+              approx(best.t, 0.30, 1e-15),
+          "rcwaord: the strongest non-zero order is found (ties keep the first)");
+    // 次数の和が合計とずれていれば検出する
+    const re::Orders off = re::parseOrders(QStringLiteral(
+        "1.0e+14,2.99792458e-06,TE,0,0,0.10,0.85\n"
+        "1.0e+14,2.99792458e-06,TM,0,0,0.20,0.80\n"));
+    check(approx(off.worstSumError(e), 0.05, 1e-12),
+          "rcwaord: a mismatch between the orders and the totals is reported");
+    // pol が TE/TM でない行・列不足・数字でない行は捨てる。0 次だけなら非鏡面は無い
+    const re::Orders badOrd = re::parseOrders(QStringLiteral(
+        "1.0e+14,3.0e-06,XX,0,0,0.1,0.9\n"
+        "1.0e+14,3.0e-06,TE,0,0,0.1\n"
+        "1.0e+14,3.0e-06,TE,a,0,0.1,0.9\n"
+        "1.0e+14,3.0e-06,TE,0,0,0.1,0.9\n"));
+    check(badOrd.points.size() == 1 && !badOrd.strongestNonSpecular(nullptr),
+          "rcwaord: malformed rows are dropped; zero order only has no non-specular order");
+    check(!re::readOrders(QStringLiteral("/nonexistent/rcwa_orders.csv")).valid(),
+          "rcwaord: a missing file yields nothing");
+
     // 空白区切り・セミコロン区切りでも読める (書式ゆれへの耐性)
     check(re::parse(QStringLiteral("1e14 3e-6 0.3 0.7 0.4 0.6\n")).points.size() == 1,
           "rcwaeff: whitespace separated rows are accepted too");
@@ -27118,6 +27522,7 @@ int main(int argc, char *argv[])
     testHybridRir();
     testOnnActivation();
     testRcwaCore();
+    testRcwaExtensions();
     testOpticsMaterials();
     testThinFilmStack();
     testFilmNotation();
@@ -27134,6 +27539,7 @@ int main(int argc, char *argv[])
     testH5Reader();
     testAntennaH5();
     testOfdIntegration(dir);
+    testOrcwaIntegration();
     testRunGating();
     testAcousticReport();
     testRirAutoAssign();

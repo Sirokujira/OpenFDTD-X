@@ -48,15 +48,35 @@ struct GeneralOpts {
 enum class OpticalSolver { FDTD, RCWA, BPM, FMM };
 enum class OpticalMode { BPF, Waveguide, Ring, MZI, Metasurface, PhC, NF2FF, SParam };
 
-// RCWA 層スタックの 1 層。OpenRCWA の `rcwalayer = <eps1> <eps2> <fill>
-// <thickness[m]>` に 1:1 対応する (sol/input_data.c)。GUI は nm で保持し、
-// .ofd 書き出し時に ×1e-9 で m へ換算する。
-// 先頭と末尾の層は半無限層として扱われ、厚みはカーネルで無視される。
+// RCWA 層スタックの 1 層。OpenRCWA の `rcwalayer = <eps1r> <eps2r> <fill>
+// <thickness[m]> [<eps1i> <eps2i> [<fill_y>]]` に 1:1 対応する
+// (OpenRCWA/sol/input_data.c)。GUI は nm で保持し、.ofd 書き出し時に ×1e-9 で
+// m へ換算する。先頭と末尾の層は半無限層として扱われ、厚みはカーネルで無視される。
+// 1 周期内で eps1 が矩形 [0, fill·Λx] × [0, fill_y·Λy] を占め、残りが eps2。
+// 虚部 (eps1i / eps2i) は損失 (exp(−iωt) なので正)。fill_y < 1 は 2D 格子。
+// 追加メンバは既定値のままなら .ofd / .ofdx の出力を変えない。
 struct RcwaLayer {
-    double eps1 = 1.0;         // 格子の材質1の比誘電率 (> 0)
-    double eps2 = 1.0;         // 格子の材質2の比誘電率 (> 0)
-    double fill = 0.5;         // フィルファクタ [0,1]
+    double eps1 = 1.0;         // 格子の材質1の比誘電率の実部
+    double eps2 = 1.0;         // 格子の材質2の比誘電率の実部
+    double fill = 0.5;         // x 方向のフィルファクタ [0,1]
     double thickness_nm = 0;   // 厚み [nm] (≥ 0、半無限層は 0)
+    double eps1i = 0.0;        // eps1 の虚部 (≥ 0 = 損失)
+    double eps2i = 0.0;        // eps2 の虚部 (≥ 0 = 損失)
+    double fill_y = 1.0;       // y 方向のフィルファクタ [0,1] (1 = y 一様 = 1D)
+};
+
+// RCWA 層の材料の分散 (Lorentz 極 1 つ)。OpenRCWA の
+// `rcwadispersion = <layer> <side> <einf> <ae> <be> <ce>` に 1:1 対応する。
+//   eps(ω) = einf + Σ ae² / (ce² − ω² − i·be·ω)   [ω, ae, be, ce: rad/s]
+// 同じ (layer, side) の複数極は加算され、einf は最後の極の値が使われる。
+// 分散を与えた材料では RcwaLayer の静的な誘電率はカーネルで使われない。
+struct RcwaPole {
+    int    layer = 1;          // 層番号 (rcwaLayerList の 1 始まりの添字)
+    int    side = 1;           // 1 = eps1, 2 = eps2
+    double einf = 1.0;
+    double ae_rad_s = 0.0;     // 振動子強度 (Drude ならプラズマ周波数 ωp)
+    double be_rad_s = 0.0;     // 減衰 (≥ 0。Drude なら衝突周波数 γ)
+    double ce_rad_s = 0.0;     // 共鳴周波数 (≥ 0。Drude なら 0)
 };
 
 // レンズ面テーブルの 1 行 (レンズエディタタブ / 光解析タブが共有する)。
@@ -105,6 +125,12 @@ struct OpticalOpts {
     // 出力しない (rcwaLayers は GUI 上の「層分割数」で意味が異なるため、
     // 後方互換のため残す — 改名も削除もしない)。
     QVector<RcwaLayer> rcwaLayerList;
+    // 2D 格子 (rcwaNy / rcwaPeriodY を orcwa へ渡す)。既定 false = 従来どおり
+    // `rcwa = <Nx> <Λx>` だけを書く。いずれかの層が fill_y < 1 なら 2D が
+    // 必要なので、このフラグに関わらず 2D で書き出す。
+    bool rcwa2d = false;
+    // 層の材料の分散 (rcwadispersion 行)。既定は空 = 出力しない。
+    QVector<RcwaPole> rcwaPoles;
 
     // 順次光学系の面テーブル (レンズエディタタブ)。**空 = 既定の設計例**
     // (defaultLensSurfaces())。利用者が編集したときだけ中身が入り、
@@ -188,8 +214,16 @@ bool isValidTpaBeta(double beta_cmGW);                       // β > 0
 bool isValidPowerSweepRange(double pmin_W, double pmax_W);   // 0 < Pmin ≤ Pmax
 
 // RCWA 層の妥当性 (GUI の入力検証と .ofd 書き出しゲートで共用)。
-// eps1 > 0, eps2 > 0, 0 ≤ fill ≤ 1, thickness_nm ≥ 0。
+// 実部 > 0 (虚部 > 0 の損失材なら実部が負の金属も可)、虚部 ≥ 0、
+// 0 ≤ fill ≤ 1、0 ≤ fill_y ≤ 1、thickness_nm ≥ 0。
 bool isValidRcwaLayer(const RcwaLayer &layer);
+// 分散極の妥当性。層番号 1..nLayers、side 1/2、be ≥ 0、ce ≥ 0、有限値。
+bool isValidRcwaPole(const RcwaPole &pole, int nLayers);
+// RCWA 設定全体 (層スタック + 分散極) が orcwa へ渡せる状態か。
+bool isValidRcwaConfig(const QVector<RcwaLayer> &layers,
+                       const QVector<RcwaPole> &poles);
+// 2D 格子として書き出すか (rcwa2d が立っているか、fill_y < 1 の層がある)。
+bool rcwaNeeds2D(bool rcwa2d, const QVector<RcwaLayer> &layers);
 // 層スタック全体が orcwa へ渡せる状態か (空でなく、全層が有効)。
 // false のとき .ofd へ RCWA 設定を一切書き出さない — 不正な設定のまま
 // カーネルを走らせない (.claude/rules/gui.md)。

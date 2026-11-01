@@ -72,9 +72,11 @@ QString OfdIO::serialize(const Project &p)
     // FMM (Fourier Modal Method) は RCWA と同一手法の別名で、カーネルも
     // 同じ OpenRCWA (orcwa) を使う — 調和次数だけ FMM 設定 (fmmHarmonics)
     // を反映する。
+    // 分散極 (rcwadispersion) が 1 つでも不正なら層が不正なときと同じく
+    // RCWA 設定を丸ごと書かない (isValidRcwaConfig)。
     const bool rcwaOut = (oo.solver == OpticalSolver::RCWA ||
                           oo.solver == OpticalSolver::FMM) &&
-                         isValidRcwaStack(oo.rcwaLayerList);
+                         isValidRcwaConfig(oo.rcwaLayerList, oo.rcwaPoles);
 
     // ヘッダ: orcwa のパーサは "OpenRCWA" / "OpenTHFD" しか受け付けない
     // (OpenRCWA/sol/input_data.c)。RCWA 設定を出力するときだけ切り替える。
@@ -250,21 +252,40 @@ QString OfdIO::serialize(const Project &p)
                 << " " << num(po.near2dVzoom[1]) << "\n";
     }
 
-    // ── RCWA コア設定 (OpenRCWA: rcwa / rcwalayer) ──────────────────────
-    // orcwa は「調和次数 1 個 + 周期 1 個」しか受け取らない 1D 格子ソルバー
-    // なので、GUI の Nx / Λx をそのまま写像する。Ny / Λy (y 方向) は
-    // カーネル側に対応するキーが無いため無視される (.ofdx には保存される)。
+    // ── RCWA コア設定 (OpenRCWA: rcwa / rcwalayer / rcwadispersion) ─────
+    // キー仕様は OpenRCWA/sol/input_data.c が正:
+    //   rcwa           = <Nx> <Λx[m]> [<Ny> <Λy[m]>]
+    //   rcwalayer      = <eps1r> <eps2r> <fill> <厚さ[m]> [<eps1i> <eps2i> [<fill_y>]]
+    //   rcwadispersion = <layer(1..)> <side(1|2)> <einf> <ae> <be> <ce>   [rad/s]
+    // 1D (rcwa2d = false かつ全層 fill_y = 1) なら従来どおり Nx Λx だけを書き、
+    // 虚部・fill_y・分散が既定値のままなら行の書式も従来と 1 バイトも変えない。
+    // 2D は Ny / Λy を書く (FMM は x/y とも fmmHarmonics)。
     // 単位: GUI は nm、orcwa は m (物理長 — γ = k0·neff スケーリング前提)。
     if (rcwaOut) {
-        const int harmonics = (oo.solver == OpticalSolver::FMM)
-                            ? oo.fmmHarmonics : oo.rcwaNx;
-        out << "rcwa = " << harmonics << " "
-            << num(oo.rcwaPeriodX * 1e-9) << "\n";
+        const bool fmm = (oo.solver == OpticalSolver::FMM);
+        const int harmonics = fmm ? oo.fmmHarmonics : oo.rcwaNx;
+        out << "rcwa = " << harmonics << " " << num(oo.rcwaPeriodX * 1e-9);
+        if (rcwaNeeds2D(oo.rcwa2d, oo.rcwaLayerList))
+            out << " " << (fmm ? oo.fmmHarmonics : oo.rcwaNy) << " "
+                << num(oo.rcwaPeriodY * 1e-9);
+        out << "\n";
         // 層は入射側 → 透過側の順にそのまま並べる (先頭/末尾は半無限層)。
-        for (const RcwaLayer &l : oo.rcwaLayerList)
+        // fill_y を書くときは虚部の組を先に書く (位置引数のため)。
+        for (const RcwaLayer &l : oo.rcwaLayerList) {
             out << "rcwalayer = " << num(l.eps1) << " " << num(l.eps2)
                 << " " << num(l.fill) << " "
-                << num(l.thickness_nm * 1e-9) << "\n";
+                << num(l.thickness_nm * 1e-9);
+            const bool fy = (l.fill_y != 1.0);
+            if (fy || l.eps1i != 0.0 || l.eps2i != 0.0)
+                out << " " << num(l.eps1i) << " " << num(l.eps2i);
+            if (fy)
+                out << " " << num(l.fill_y);
+            out << "\n";
+        }
+        for (const RcwaPole &q : oo.rcwaPoles)
+            out << "rcwadispersion = " << q.layer << " " << q.side << " "
+                << num(q.einf) << " " << num(q.ae_rad_s) << " "
+                << num(q.be_rad_s) << " " << num(q.ce_rad_s) << "\n";
     }
 
     // ── 非線形 (TPA) / ONN 活性化キー (OpenBPM: tpa+powersweep, OpenFDTD:
@@ -564,6 +585,12 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
             o.solver = OpticalSolver::RCWA;
             o.rcwaNx = n(0);
             o.rcwaPeriodX = d(1) * 1e9;    // m → nm
+            // 2D 格子: rcwa = Nx Λx Ny Λy (書き戻しでも 2D を保つ)
+            if (t.size() >= 4) {
+                o.rcwa2d = true;
+                o.rcwaNy = n(2);
+                o.rcwaPeriodY = d(3) * 1e9;
+            }
         }
         else if (key == "rcwalayer" && t.size() >= 4) {
             RcwaLayer l;
@@ -571,7 +598,23 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
             l.eps2 = d(1);
             l.fill = d(2);
             l.thickness_nm = d(3) * 1e9;   // m → nm
+            if (t.size() >= 6) {           // 虚部の組 (損失)
+                l.eps1i = d(4);
+                l.eps2i = d(5);
+            }
+            if (t.size() >= 7)             // y 方向のフィルファクタ (2D)
+                l.fill_y = d(6);
             project.optical().rcwaLayerList.push_back(l);
+        }
+        else if (key == "rcwadispersion" && t.size() >= 6) {
+            RcwaPole q;
+            q.layer = n(0);
+            q.side = n(1);
+            q.einf = d(2);
+            q.ae_rad_s = d(3);
+            q.be_rad_s = d(4);
+            q.ce_rad_s = d(5);
+            project.optical().rcwaPoles.push_back(q);
         }
         // ── 非線形 (TPA) / ONN 活性化キー ───────────────────────────────
         else if (key == "tpa" && t.size() >= 2) {
@@ -661,16 +704,34 @@ QByteArray OfdxIO::serialize(const Project &p)
             {"min_nm", o.lambdaMin}, {"max_nm", o.lambdaMax}, {"div", o.lambdaDiv} };
         // RCWA 層スタック — "layer_list" は追加キー。既存の "layers"
         // (GUI 上の層分割数) は意味が違うので残す (改名・削除は禁止)。
+        // 層の虚部 / fill_y、2D フラグ、分散極は追加キー。既定値のままなら
+        // キー自体を書かない (旧ファイルと 1 バイトも変えない)。
         QJsonArray rcwaLayerList;
-        for (const RcwaLayer &l : o.rcwaLayerList)
-            rcwaLayerList.append(QJsonObject{
+        for (const RcwaLayer &l : o.rcwaLayerList) {
+            QJsonObject lo{
                 {"eps1", l.eps1}, {"eps2", l.eps2},
-                {"fill", l.fill}, {"thickness_nm", l.thickness_nm} });
-        opt["rcwa"] = QJsonObject{
+                {"fill", l.fill}, {"thickness_nm", l.thickness_nm} };
+            if (l.eps1i != 0.0) lo["eps1i"] = l.eps1i;
+            if (l.eps2i != 0.0) lo["eps2i"] = l.eps2i;
+            if (l.fill_y != 1.0) lo["fill_y"] = l.fill_y;
+            rcwaLayerList.append(lo);
+        }
+        QJsonObject rcwaObj{
             {"nx", o.rcwaNx}, {"ny", o.rcwaNy},
             {"period_x_nm", o.rcwaPeriodX}, {"period_y_nm", o.rcwaPeriodY},
             {"layers", o.rcwaLayers},
             {"layer_list", rcwaLayerList} };
+        if (o.rcwa2d) rcwaObj["two_d"] = true;
+        if (!o.rcwaPoles.isEmpty()) {
+            QJsonArray poles;
+            for (const RcwaPole &q : o.rcwaPoles)
+                poles.append(QJsonObject{
+                    {"layer", q.layer}, {"side", q.side}, {"einf", q.einf},
+                    {"ae_rad_s", q.ae_rad_s}, {"be_rad_s", q.be_rad_s},
+                    {"ce_rad_s", q.ce_rad_s} });
+            rcwaObj["dispersion"] = poles;
+        }
+        opt["rcwa"] = rcwaObj;
         // 順次光学系の面テーブル — 利用者が編集したときだけ書く。
         // 空 (= 既定の設計例のまま) なら **キーごと出さない** ので、
         // 触っていないプロジェクトの .ofdx は 1 バイトも変わらない。
@@ -1389,7 +1450,27 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
                 l.fill = lo.value("fill").toDouble(l.fill);
                 l.thickness_nm =
                     lo.value("thickness_nm").toDouble(l.thickness_nm);
+                l.eps1i = lo.value("eps1i").toDouble(l.eps1i);
+                l.eps2i = lo.value("eps2i").toDouble(l.eps2i);
+                l.fill_y = lo.value("fill_y").toDouble(l.fill_y);
                 o.rcwaLayerList.push_back(l);
+            }
+        }
+        // 2D フラグ / 分散極 — 欠落していれば .ofd から読んだ値を残す
+        if (rc.contains("two_d"))
+            o.rcwa2d = rc.value("two_d").toBool(o.rcwa2d);
+        if (rc.contains("dispersion")) {
+            o.rcwaPoles.clear();
+            for (const QJsonValue &v : rc["dispersion"].toArray()) {
+                const QJsonObject po = v.toObject();
+                RcwaPole q;
+                q.layer = po.value("layer").toInt(q.layer);
+                q.side = po.value("side").toInt(q.side);
+                q.einf = po.value("einf").toDouble(q.einf);
+                q.ae_rad_s = po.value("ae_rad_s").toDouble(q.ae_rad_s);
+                q.be_rad_s = po.value("be_rad_s").toDouble(q.be_rad_s);
+                q.ce_rad_s = po.value("ce_rad_s").toDouble(q.ce_rad_s);
+                o.rcwaPoles.push_back(q);
             }
         }
         // 面テーブル — キーが無ければ空のまま (= 既定の設計例)
