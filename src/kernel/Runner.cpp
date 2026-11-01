@@ -280,7 +280,7 @@ QString Runner::engineUnsupportedReason(const Project &project, Engine engine)
     case OpticalSolver::FMM:
         // rcwalayer を書き出すのは層スタックが有効なときだけ (OfdIO と同じ
         // 判定)。無効なら orcwa は FDTD として走るので変種間の差は無い。
-        if (!isValidRcwaStack(o.rcwaLayerList)) return QString();
+        if (!isValidRcwaConfig(o.rcwaLayerList, o.rcwaPoles)) return QString();
         return QStringLiteral(
             "RCWA / FMM (rcwalayer) を計算できるのは orcwa (CPU) だけです — "
             "orcwa_mpi / orcwa_cuda / orcwa_cuda_mpi は FDTD 専用");

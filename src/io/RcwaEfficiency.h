@@ -37,5 +37,33 @@ struct Efficiency {
 Efficiency read(const QString &csvPath);
 Efficiency parse(const QString &text);
 
+// ── 回折次数ごとの効率 (rcwa_orders.csv) ──────────────────────────────────
+// 書式はカーネル側 (`OpenRCWA/sol/rcwa_bridge.cpp`) の書き出しが正:
+//
+//     frequency[Hz],lambda[m],pol,m,n,R,T
+//
+// 入射側か透過側で伝搬する次数 (m, n) だけが 1 行ずつ並ぶ (伝搬しない側は 0)。
+// pol は "TE" / "TM"。同じ周波数・偏波の行の和が rcwa_efficiency.csv の R / T。
+struct OrderPoint {
+    double freqHz = 0.0, lambda_m = 0.0;
+    bool   te = true;              // false = TM
+    int    m = 0, n = 0;
+    double r = 0.0, t = 0.0;
+};
+
+struct Orders {
+    QVector<OrderPoint> points;
+    bool valid() const { return points.size() >= 1; }
+    // 次数の和と合計 (rcwa_efficiency.csv) の最大のずれ。合計側に無い周波数は
+    // 比べない。どちらかが空なら 0。
+    double worstSumError(const Efficiency &total) const;
+    // 0 次以外で効率 (R か T) が最大の次数。無ければ false。
+    bool strongestNonSpecular(OrderPoint *out) const;
+};
+
+// 見出し行・列の欠けた行・pol が TE/TM でない行は捨てる。
+Orders readOrders(const QString &csvPath);
+Orders parseOrders(const QString &text);
+
 } // namespace rcwa
 } // namespace ofd
