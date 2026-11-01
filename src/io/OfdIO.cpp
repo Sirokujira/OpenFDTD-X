@@ -252,11 +252,12 @@ QString OfdIO::serialize(const Project &p)
                 << " " << num(po.near2dVzoom[1]) << "\n";
     }
 
-    // ── RCWA コア設定 (OpenRCWA: rcwa / rcwalayer / rcwadispersion) ─────
+    // ── RCWA コア設定 (OpenRCWA: rcwa / rcwalayer / rcwadispersion / rcwaincidence)
     // キー仕様は OpenRCWA/sol/input_data.c が正:
     //   rcwa           = <Nx> <Λx[m]> [<Ny> <Λy[m]>]
     //   rcwalayer      = <eps1r> <eps2r> <fill> <厚さ[m]> [<eps1i> <eps2i> [<fill_y>]]
     //   rcwadispersion = <layer(1..)> <side(1|2)> <einf> <ae> <be> <ce>   [rad/s]
+    //   rcwaincidence  = <θ[deg]> <φ[deg]>   (planewave より優先)
     // 1D (rcwa2d = false かつ全層 fill_y = 1) なら従来どおり Nx Λx だけを書き、
     // 虚部・fill_y・分散が既定値のままなら行の書式も従来と 1 バイトも変えない。
     // 2D は Ny / Λy を書く (FMM は x/y とも fmmHarmonics)。
@@ -286,6 +287,12 @@ QString OfdIO::serialize(const Project &p)
             out << "rcwadispersion = " << q.layer << " " << q.side << " "
                 << num(q.einf) << " " << num(q.ae_rad_s) << " "
                 << num(q.be_rad_s) << " " << num(q.ce_rad_s) << "\n";
+        // 入射角 (rcwaincidence = θ φ)。orcwa は planewave より優先する。
+        // 法線入射のままで FDTD の平面波も無効なら書かない (従来とバイト一致)。
+        if (rcwaWritesIncidence(oo.rcwaTheta_deg, oo.rcwaPhi_deg,
+                                p.planewave().enabled))
+            out << "rcwaincidence = " << num(oo.rcwaTheta_deg) << " "
+                << num(oo.rcwaPhi_deg) << "\n";
     }
 
     // ── 非線形 (TPA) / ONN 活性化キー (OpenBPM: tpa+powersweep, OpenFDTD:
@@ -616,6 +623,10 @@ bool OfdIO::parse(const QString &text, Project &project, QString *err)
             q.ce_rad_s = d(5);
             project.optical().rcwaPoles.push_back(q);
         }
+        else if (key == "rcwaincidence" && t.size() >= 2) {
+            project.optical().rcwaTheta_deg = d(0);
+            project.optical().rcwaPhi_deg = d(1);
+        }
         // ── 非線形 (TPA) / ONN 活性化キー ───────────────────────────────
         else if (key == "tpa" && t.size() >= 2) {
             OpticalOpts &o = project.optical();
@@ -722,6 +733,9 @@ QByteArray OfdxIO::serialize(const Project &p)
             {"layers", o.rcwaLayers},
             {"layer_list", rcwaLayerList} };
         if (o.rcwa2d) rcwaObj["two_d"] = true;
+        if (o.rcwaTheta_deg != 0.0 || o.rcwaPhi_deg != 0.0)
+            rcwaObj["incidence"] = QJsonObject{
+                {"theta_deg", o.rcwaTheta_deg}, {"phi_deg", o.rcwaPhi_deg} };
         if (!o.rcwaPoles.isEmpty()) {
             QJsonArray poles;
             for (const RcwaPole &q : o.rcwaPoles)
@@ -1459,6 +1473,11 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         // 2D フラグ / 分散極 — 欠落していれば .ofd から読んだ値を残す
         if (rc.contains("two_d"))
             o.rcwa2d = rc.value("two_d").toBool(o.rcwa2d);
+        if (rc.contains("incidence")) {
+            const QJsonObject io = rc.value("incidence").toObject();
+            o.rcwaTheta_deg = io.value("theta_deg").toDouble(o.rcwaTheta_deg);
+            o.rcwaPhi_deg = io.value("phi_deg").toDouble(o.rcwaPhi_deg);
+        }
         if (rc.contains("dispersion")) {
             o.rcwaPoles.clear();
             for (const QJsonValue &v : rc["dispersion"].toArray()) {

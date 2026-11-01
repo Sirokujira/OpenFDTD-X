@@ -52,6 +52,17 @@ bool ofd::isValidRcwaConfig(const QVector<RcwaLayer> &layers,
     return true;
 }
 
+bool ofd::isValidRcwaIncidence(double theta_deg, double phi_deg)
+{
+    return std::isfinite(theta_deg) && std::isfinite(phi_deg) &&
+           theta_deg > -90.0 && theta_deg < 90.0;
+}
+
+bool ofd::rcwaWritesIncidence(double theta_deg, double phi_deg, bool planewaveEnabled)
+{
+    return planewaveEnabled || theta_deg != 0.0 || phi_deg != 0.0;
+}
+
 bool ofd::rcwaNeeds2D(bool rcwa2d, const QVector<RcwaLayer> &layers)
 {
     if (rcwa2d) return true;

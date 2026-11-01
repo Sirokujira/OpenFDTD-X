@@ -580,6 +580,13 @@ void I18n::loadTables() {
         "Cannot run: the RCWA / FMM layer stack is empty or invalid.\n"
         "Define at least two valid layers under \"Layer stack\" on the "
         "Optical tab (no orcwa kernel input can be generated).");
+    add("run_rcwa_inc_err",
+        "RCWA / FMM の入射角 θ が範囲外のため実行できません。\n"
+        "光ソルバータブの RCWA ページで −90° < θ < 90° を指定してください "
+        "(orcwa は範囲外の θ を入力エラーにします)。",
+        "Cannot run: the RCWA / FMM incidence angle θ is out of range.\n"
+        "Set −90° < θ < 90° on the RCWA page of the optical solvers tab "
+        "(orcwa rejects θ outside that range).");
     // 音響ドメインの計算ボタン: ofd (電磁 FDTD) の波動アナロジー実行で
     // あることの確認 (ADR-0004 — 音響 FDTD は外部専用ソルバー。絶対規則 5)
     add("run_acoustic_analogy",

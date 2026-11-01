@@ -131,6 +131,13 @@ struct OpticalOpts {
     bool rcwa2d = false;
     // 層の材料の分散 (rcwadispersion 行)。既定は空 = 出力しない。
     QVector<RcwaPole> rcwaPoles;
+    // RCWA / FMM の入射角 [deg] (rcwaincidence 行)。θ は法線からの角度
+    // (−90 < θ < 90)、φ は入射面の方位で、入射側の横波数は
+    // k0·n·sinθ·(cosφ, sinφ)。**FDTD の平面波 (Project::planewave()) とは別の
+    // 設定**: planewave の θ φ は波が「来る」方向 (横波数の向きが逆、既定
+    // θ = 90°) で意味が違う。既定 0 / 0 = 法線入射 (行を書かない)。
+    double rcwaTheta_deg = 0.0;
+    double rcwaPhi_deg = 0.0;
 
     // 順次光学系の面テーブル (レンズエディタタブ)。**空 = 既定の設計例**
     // (defaultLensSurfaces())。利用者が編集したときだけ中身が入り、
@@ -224,6 +231,12 @@ bool isValidRcwaConfig(const QVector<RcwaLayer> &layers,
                        const QVector<RcwaPole> &poles);
 // 2D 格子として書き出すか (rcwa2d が立っているか、fill_y < 1 の層がある)。
 bool rcwaNeeds2D(bool rcwa2d, const QVector<RcwaLayer> &layers);
+// RCWA の入射角が orcwa へ渡せるか (有限値、−90 < θ < 90)。
+bool isValidRcwaIncidence(double theta_deg, double phi_deg);
+// rcwaincidence 行を書くか。角度が既定 (0, 0) 以外のとき、または FDTD の
+// 平面波が有効なとき (書かないと orcwa は planewave の θ φ — FDTD の意味で、
+// 既定 θ = 90° — を RCWA の入射角として読み、範囲外で止まる)。
+bool rcwaWritesIncidence(double theta_deg, double phi_deg, bool planewaveEnabled);
 // 層スタック全体が orcwa へ渡せる状態か (空でなく、全層が有効)。
 // false のとき .ofd へ RCWA 設定を一切書き出さない — 不正な設定のまま
 // カーネルを走らせない (.claude/rules/gui.md)。

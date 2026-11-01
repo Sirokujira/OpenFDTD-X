@@ -3935,3 +3935,54 @@ rcwadispersion = <層(1..)> <材質(1|2)> <ε∞> <ae> <be> <ce>   [rad/s]
   こと、存在しないファイル。
 - `orcwa_integration` (実カーネル): GUI モデルで組んだ 2D 正方形柱が
   **TE = TM・R + T = 1・次数の和 = 合計**、Drude 薄膜 (分散) が R + T < 1。
+
+### 光 RCWA: 入射角 θ, φ を orcwa へ (2026-11-01)
+
+RCWA ページの「入射波 (θ, φ, ψ)」は**計算に反映されない入力**だった
+(`unwired-inventory.md` の区分 B、理由「orcwa の入力キーに無い」)。実際には
+orcwa は `.ofd` 経路でも斜め入射を解けて、角度を `planewave = θ φ pol` の θ φ から
+取っていた。ただし **`planewave` は FDTD の平面波と同じ行で、θ の意味が違う**:
+
+| | θ の意味 | 入射側の横波数 | 既定 |
+|---|---|---|---|
+| FDTD (`setup_planewave`) | 波が**来る**方向の球座標 | −k·sinθ·(cosφ, sinφ) | θ = 90° (`PlaneWave`) |
+| RCWA (`rcwa_bridge.cpp`) | 法線からの入射角 (−90 < θ < 90) | +k0·n·sinθ·(cosφ, sinφ) | 0 |
+
+このため、**波源タブで平面波を有効にしたまま RCWA を選ぶと、既定の θ = 90° で
+orcwa が「theta must be within (-90, 90)」で止まっていた**。RCWA の角度を
+`planewave` に書けば FDTD の平面波 (波源タブ・散乱タブで共有) を書き換えることに
+なる。そこで OpenRCWA 側に RCWA 専用のキー `rcwaincidence = <θ> <φ>`
+(`planewave` より優先、OpenRCWA#23) を足し、GUI は FDTD の `planewave` に触れずに
+これを書く。
+
+- **モデル** (`core/Project.h`): `OpticalOpts::rcwaTheta_deg` / `rcwaPhi_deg`
+  (既定 0 / 0 = 法線入射)。`isValidRcwaIncidence` (有限値、−90 < θ < 90) と
+  `rcwaWritesIncidence` (行を書く条件)。
+- **書き出し** (`io/OfdIO`): RCWA 行を書くとき (`rcwaOut`) に、角度が既定以外
+  **または FDTD の平面波が有効なとき**だけ `rcwaincidence` を書く。後者は
+  `rcwaincidence = 0 0` を明示して、orcwa が planewave の θ (FDTD の意味) を
+  拾わないようにするため。**既定 (法線入射・平面波無効) の出力は 1 バイトも
+  変わらない**。平面波が有効な RCWA 入力だけは 1 行増える — この組合せは θ が
+  範囲外なら orcwa が止まり、範囲内でも FDTD の角度を RCWA の角度として
+  読み違えていた (画面の RCWA ページは θ = 0 を表示していた) ので、意図して
+  変える。FMM は RCWA と同じ orcwa なので同じ角度を書く。
+- **読み込み**: `rcwaincidence` は RCWA の角度へ入り、`planewave` は従来どおり
+  FDTD の平面波へ入る (互いに混ざらない)。**.ofdx**: `rcwa.incidence`
+  (`theta_deg` / `phi_deg`) を既定以外のときだけ書く。
+- **画面**: θ / φ を配線し、FDTD の平面波とは別の設定であること・ψ は未対応
+  (orcwa は TE / TM の両方を出す) を注記。θ が範囲外なら警告を出し、計算開始を
+  止める (`run_rcwa_inc_err`、層スタックが不正なときと同じ扱い)。未配線の注記から
+  θ / φ を外した (ψ・Truncation 法・TE/TM・出力チェックは引き続き未配線)。
+
+検証 (selftest 11544 → 11696 checks (+152)、`OFDX_ORCWA_BIN` があればさらに +13):
+
+- `rcwa-inc`: 妥当性 (±90 は無効、NaN / ∞ は無効)、書く条件の真理値表、既定値で
+  出力不変、`rcwaincidence = 30 20` が層の後に出て planewave は出ないこと、
+  読み戻しで値・FDTD 平面波が無効のまま・未知行に落ちないこと・バイト一致、
+  平面波が有効なら `rcwaincidence = 0 0` を明示して planewave 行と FDTD の
+  モデルは変えないこと、FDTD ソルバー / 不正な層では書かないこと、FMM でも
+  書くこと、.ofdx のキーの有無・往復・旧ファイル。`compareProjects` に角度を追加
+  したので既存のラウンドトリップ検査すべてで角度の往復も見る (増分の大半)。
+- `orcwa_integration` (実カーネル): FDTD の平面波を有効 (θ = 90°) にしたまま
+  RCWA の θ = 40°, φ = 30° を空気 / ガラス界面で解き、カーネルが止まらないこと、
+  ログに角度が届くこと、**Fresnel 係数と 1e-6 以内**、R + T = 1。

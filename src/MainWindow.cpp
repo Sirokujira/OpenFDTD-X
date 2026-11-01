@@ -1401,6 +1401,14 @@ void MainWindow::runSimulation()
                                  I18n::tr("run_rcwa_stack_err"));
             return;
         }
+        // 入射角が範囲外なら orcwa が必ず入力エラーで止まる — 開始しない
+        if ((oo.solver == OpticalSolver::RCWA ||
+             oo.solver == OpticalSolver::FMM) &&
+            !isValidRcwaIncidence(oo.rcwaTheta_deg, oo.rcwaPhi_deg)) {
+            QMessageBox::warning(this, I18n::tr("tb_calc"),
+                                 I18n::tr("run_rcwa_inc_err"));
+            return;
+        }
     }
     // 音響ドメイン: 計算ボタンは ofd (電磁 FDTD) の波動アナロジー実行で、
     // 音響指標の定量値は得られない (ADR-0004 — 音響 FDTD は外部専用ソルバー)。
