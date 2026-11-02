@@ -42,6 +42,20 @@ public:
     // 端に来る点が枠と重なって見えなくなる図でだけ使う。
     void setXMargin(double frac) { m_xMargin = frac; update(); }
 
+    // 軸範囲 (ヘッドレス検証用に public な純関数)。範囲は**有限な値だけ**から
+    // 決める。データが無い軸は 0〜1 を既定とし、has* を false にする — 空の
+    // 図に、番兵の初期値 (±1e300) から作った意味の無い目盛を出さないため。
+    // 有限なデータがあるときの計算は従来と同じ順序・同じ式 (表示は変わらない)。
+    struct AxisRange {
+        double xLo = 0, xHi = 1, yLo = 0, yHi = 1;
+        bool hasX = false;     // 有限な x が 1 つ以上ある
+        bool hasY = false;     // 有限な y が 1 つ以上ある
+        bool hasData = false;  // x / y とも有限な点が 1 つ以上ある
+    };
+    static AxisRange autoRange(const QVector<MiniSeries> &series, bool fixedY,
+                               double fixedYLo, double fixedYHi,
+                               double xMargin);
+
 protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
@@ -57,6 +71,7 @@ private:
     struct View {
         QRectF plot;
         double xLo = 0, xHi = 1, yLo = 0, yHi = 1;
+        bool hasX = false, hasY = false, hasData = false;
         double xPix(double x) const;
         double yPix(double y) const;
         double xData(double px) const;
