@@ -42,6 +42,8 @@ public:
 private slots:
     void presetChanged(int index);      // プリセット → 層構成・波長・ターゲット
     void recompute();                   // 層構成 → TMM → 図・指標・Merit・感度
+    // 層内の電界分布の図と注記 (m_showField のときだけ recompute() から呼ぶ)
+    void refreshFieldProfile(const optics::StackAtLambda &fn, double lam0, double aoi);
     void runMonteCarlo();               // 製造誤差モンテカルロ (ボタン)
     void expandPeriodic();              // 周期記法 → 層構成 (展開ボタン)
     void runOptimization();             // 膜厚最適化 (シンプレックス法)
@@ -122,6 +124,11 @@ private:
     class AngleLambdaMap *m_map = nullptr;
     QLabel       *m_mapNote = nullptr;
     bool          m_showMap = false;
+    // 層内の電界分布 (s 偏波の |E/E0+|²、特性行列を層の途中で打ち切ったもの)
+    QPushButton  *m_fieldBtn = nullptr;
+    MiniPlot     *m_fieldPlot = nullptr;
+    QLabel       *m_fieldNote = nullptr;
+    bool          m_showField = false;
     QTableWidget *m_specTable;
     QLabel       *m_specNote;           // 評価波長域・除外点数
 

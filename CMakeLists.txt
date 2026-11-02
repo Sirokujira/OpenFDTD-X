@@ -399,6 +399,9 @@ set(CORE_SOURCES
     # LensEditorTab のスポットダイアグラム / 光線収差図の計算実体
     src/optics/RayTrace.cpp
     src/optics/RayTrace.h
+    # 実光線追跡による波面収差 (OPD) と Zernike 展開 — LensEditorTab の波面マップ
+    src/optics/Wavefront.cpp
+    src/optics/Wavefront.h
 
     # 非順次 (照明系) モンテカルロ・レイトレーサ — Qt 非依存。
     # IlluminationTab の配光量 (全光束・光学効率・ビーム角・均斉度) の計算実体
@@ -705,6 +708,9 @@ add_library(ofdx_acoustic_core STATIC
     # 低域 FDTD + 高域 幾何音響 のハイブリッド RIR 合成 (音源パルスの
     # 逆フィルタ + 相補な線形位相クロスオーバー)
     src/acoustics/core/HybridRir.cpp
+    # 統計モデルの受聴位置 RIR (直接音 + 離散反射 + 帯域別指数減衰の拡散音)
+    # — ホール解析タブの「各席の可聴化」が使う
+    src/acoustics/core/StatisticalRir.cpp
     src/acoustics/core/Fft.cpp
     src/acoustics/core/FormantEstimator.cpp
     src/acoustics/core/VocalAnalyzer.cpp
@@ -829,6 +835,7 @@ if(BUILD_TESTS)
         vocal
         schroeder
         wav
+        statrir
     )
     foreach(_t IN LISTS OFDX_ACOUSTIC_TESTS)
         add_executable(ofdx_test_${_t} tests/acoustics/test_${_t}.cpp)

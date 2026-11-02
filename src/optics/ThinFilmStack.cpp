@@ -334,6 +334,112 @@ std::vector<AnglePoint> angleSweep(const StackAtLambda &stack, double lambda_nm,
     return out;
 }
 
+// ── 層内の電界分布 (s 偏波) ──────────────────────────────────────────────────
+FieldProfile fieldProfileS(double n0, const std::vector<FilmLayer> &layers,
+                           double nsub, double ksub, double lambda_nm,
+                           double aoi_deg, int pointsPerWave,
+                           double front_nm, double back_nm)
+{
+    FieldProfile out;
+    const FilmResponse fr = filmResponse(n0, layers, nsub, ksub, lambda_nm,
+                                         aoi_deg, Pol::S);
+    if (!fr.valid) return out;
+    if (front_nm < 0.0 || back_nm < 0.0) return out;
+    const int ppw = std::max(4, pointsPerWave);
+
+    const double th = aoi_deg * kPi / 180.0;
+    const double c0 = std::cos(th);
+    const double s0 = n0 * std::sin(th);
+    const double eta0 = n0 * c0;                  // s 偏波
+    const cd Ns(nsub, -ksub);
+    const cd qs = qOf(Ns, s0);
+    const size_t N = layers.size();
+
+    // 各界面の (E, H)。基板側の界面で E = 1, H = ηs と置き、filmResponse と
+    // 同じ漸化式で表面へ戻る。back[j] は層 j の基板側の面の値。
+    std::vector<cd> eB(N + 1), hB(N + 1);
+    std::vector<cd> qL(N), etaL(N);
+    cd E(1.0, 0.0), H = qs;
+    eB[N] = E; hB[N] = H;
+    for (int j = int(N) - 1; j >= 0; --j) {
+        const FilmLayer &L = layers[j];
+        qL[j] = qOf(cd(L.n, -L.k), s0);
+        etaL[j] = qL[j];
+        const cd delta = (2.0 * kPi * L.d_nm / lambda_nm) * qL[j];
+        const cd cs = std::cos(delta), sn = std::sin(delta);
+        const cd nE = cs * E + (cd(0.0, 1.0) * sn / etaL[j]) * H;
+        const cd nH = (cd(0.0, 1.0) * etaL[j] * sn) * E + cs * H;
+        E = nE; H = nH;
+        eB[j] = E; hB[j] = H;                    // eB[j] = 層 j の入射側の面
+    }
+    // eB[j] は層 j の入射側、eB[j+1] は層 j の基板側
+    const cd ePlus = (eta0 * eB[0] + hB[0]) / (2.0 * eta0);
+    const double inc2 = std::norm(ePlus);
+    if (!(inc2 > 0.0)) return out;
+
+    // 均質な媒質の中で、基板側の面 (E_b, H_b) から入射側へ u 戻った位置の E
+    auto back2front = [&](const cd &Eb, const cd &Hb, const cd &q,
+                          const cd &eta, double u) {
+        const cd delta = (2.0 * kPi * u / lambda_nm) * q;
+        return std::cos(delta) * Eb + (cd(0.0, 1.0) * std::sin(delta) / eta) * Hb;
+    };
+    auto push = [&](double z, int region, const cd &e) {
+        FieldPoint p;
+        p.z_nm = z;
+        p.region = region;
+        p.e2 = std::norm(e) / inc2;
+        out.pts.push_back(p);
+    };
+
+    // 入射媒質 (z = −front … 0)。表面の (E, H) から前へ戻る
+    if (front_nm > 0.0) {
+        const int n = std::max(16, int(std::ceil(n0 * c0 * front_nm / lambda_nm * ppw)));
+        for (int i = 0; i <= n; ++i) {
+            const double u = front_nm * double(n - i) / n;
+            push(-u, -1, back2front(eB[0], hB[0], cd(eta0, 0.0), cd(eta0, 0.0), u));
+        }
+    }
+    // 層
+    double z0 = 0.0;
+    out.boundary_nm.push_back(0.0);
+    out.layerA.assign(N, 0.0);
+    for (size_t j = 0; j < N; ++j) {
+        const double d = layers[j].d_nm;
+        int n = std::max(16, int(std::ceil(std::abs(qL[j]) * d / lambda_nm * ppw)));
+        if (n % 2) ++n;                          // Simpson 則は偶数区間
+        std::vector<double> e2(n + 1);
+        for (int i = 0; i <= n; ++i) {
+            const double t = d * double(i) / n;  // 層の入射側から測った深さ
+            const cd e = back2front(eB[j + 1], hB[j + 1], qL[j], etaL[j], d - t);
+            push(z0 + t, int(j), e);
+            e2[i] = out.pts.back().e2;
+        }
+        if (layers[j].k > 0.0 && d > 0.0) {
+            double sum = e2[0] + e2[n];
+            for (int i = 1; i < n; ++i) sum += (i % 2 ? 4.0 : 2.0) * e2[i];
+            const double integral = sum * (d / n) / 3.0;
+            out.layerA[j] = (2.0 * kPi / lambda_nm) * 2.0 * layers[j].n
+                            * layers[j].k * integral / eta0;
+        }
+        z0 += d;
+        out.boundary_nm.push_back(z0);
+    }
+    // 基板 (透過波のみ)。E(w) = E_s·exp(−i·2π·q_s·w/λ)
+    if (back_nm > 0.0) {
+        const int n = std::max(16, int(std::ceil(std::abs(qs) * back_nm / lambda_nm * ppw)));
+        for (int i = 0; i <= n; ++i) {
+            const double w = back_nm * double(i) / n;
+            const cd e = eB[N] * std::exp(cd(0.0, -2.0 * kPi * w / lambda_nm) * qs);
+            push(z0 + w, int(N), e);
+        }
+    }
+    out.R = fr.R;
+    out.T = fr.T;
+    out.A = fr.A;
+    out.valid = true;
+    return out;
+}
+
 // ── メリット関数 ────────────────────────────────────────────────────────────
 MeritResult merit(const StackAtLambda &stack,
                   const std::vector<TargetBand> &targets, double aoi_deg)

@@ -118,6 +118,7 @@
 #include "io/Tidy3dExporter.h"
 #include "optics/IlluminationTrace.h"
 #include "optics/RayTrace.h"
+#include "optics/Wavefront.h"
 #include "optics/SeidelAberration.h"
 #include "core/SolverSelection.h"
 #include "em/SarMetrics.h"
@@ -2220,6 +2221,41 @@ static void testOperaAcousticSettings()
                       "schema: 版が違っても中身が同じなら結果は同一 "
                       "(読み手は版で分岐しない)");
             }
+
+            // 1.0 → 1.1 の書き戻しでも、他ツールが書いた未知キーは
+            // 逐語で残る (版の更新が ofdxExtra 差分を壊さないこと)
+            QTemporaryFile extra;
+            extra.setFileTemplate(QDir::tempPath() + "/ofdx_schema_x_XXXXXX.ofdx");
+            if (extra.open()) {
+                extra.write("{ \"schemaVersion\": \"1.0\","
+                            "  \"domain\": \"acoustic\", \"future_key\": 42 }");
+                extra.flush();
+                Project s;
+                check(OfdxIO::load(extra.fileName(), s),
+                      "schema: 未知キーつき 1.0 ファイルを読める");
+                const QByteArray re = OfdxIO::serialize(s);
+                check(re.contains("\"schemaVersion\": \"1.1\""),
+                      "schema: 未知キーがあっても 1.1 へ上がる");
+                check(QJsonDocument::fromJson(re).object()
+                          .value("future_key").toInt() == 42,
+                      "schema: 版の更新で未知キーを失わない");
+            }
+        }
+
+        // 未知の将来バージョンも「読める範囲で読む」(版で分岐しないことの
+        // 裏返し — 知らない版を拒否しないこと)
+        QTemporaryFile future;
+        future.setFileTemplate(QDir::tempPath() + "/ofdx_schema_f_XXXXXX.ofdx");
+        if (future.open()) {
+            future.write("{ \"schemaVersion\": \"9.9\", \"domain\": \"acoustic\","
+                         "  \"acoustic\": { \"opera_analysis\": {"
+                         "      \"enabled\": true, \"band_mode\": 1 } } }");
+            future.flush();
+            Project t;
+            check(OfdxIO::load(future.fileName(), t),
+                  "schema: 未知の将来版でも読み込みは成功する");
+            check(t.operaAcoustic().enabled && t.operaAcoustic().bandMode == 1,
+                  "schema: 未知の将来版でもキーの中身は読める");
         }
     }
 }
@@ -3528,6 +3564,39 @@ static void testAudioEditEngine()
         // 4800 + round(4410·160/147) − 480 = 9120
         check(std::llabs((long long)cc.sampleCount() - 9120) <= 1,
               "crossfade length after resampling");
+        // 変換できる fs 比なら error は空 (呼び出し側の失敗判定が誤爆しない)。
+        // 事前に入っていた文字列も消す (前回の失敗理由を持ち越さない)
+        {
+            std::string err = "stale";
+            const AudioBuffer ok = crossfadeConcat(a48, b441, 0.01, &err);
+            check(err.empty(), "crossfade convertible fs leaves error empty");
+            check(ok.sampleCount() == cc.sampleCount(),
+                  "crossfade with error arg gives the same result");
+        }
+        // 変換できない fs 比 (96001 Hz → 48000 Hz: 比 48000/96001 は素因数に
+        // 分けられず 1 段の上限 65536 を超える) では**結合しない**。b を
+        // a の fs のまま並べると音程・速度が黙ってずれる (約 2 倍速)。
+        // 整数 fs の実 WAV でも起こる比なので、非整数 fs だけの話ではない
+        {
+            const AudioBuffer b96001 =
+                generateSignal(SignalKind::Sine, 1000, 0, 0.1, 0.5, 96001.0);
+            std::string err;
+            const AudioBuffer bad = crossfadeConcat(a48, b96001, 0.01, &err);
+            check(!err.empty(), "crossfade unconvertible fs reports error");
+            check(err.find("96001") != std::string::npos,
+                  "crossfade error names the offending fs");
+            bool same = bad.sampleRateHz == a48.sampleRateHz &&
+                        bad.channelCount() == a48.channelCount() &&
+                        bad.sampleCount() == a48.sampleCount();
+            for (std::size_t c = 0; same && c < a48.channelCount(); ++c)
+                same = bad.channels[c] == a48.channels[c];
+            check(same, "crossfade unconvertible fs returns a bit-identical "
+                        "(no wrong-speed append)");
+            // error を受け取らない呼び出しでも誤速度の結合はしない
+            const AudioBuffer bad2 = crossfadeConcat(a48, b96001, 0.01);
+            check(bad2.sampleCount() == a48.sampleCount(),
+                  "crossfade unconvertible fs without error arg still refuses");
+        }
         // チャンネル数不一致は多い方に合わせ、モノは複製する
         AudioBuffer st2;
         st2.sampleRateHz = 1000.0;
@@ -4168,6 +4237,94 @@ static void testAudioEditEngine()
 // QtAcousticAdapter は calibrationState==Absolute のときだけオフセットを
 // 分析コアへ渡す。Relative / Uncalibrated では 0 (未校正なのに SPL が
 // ずれるのを防ぐ — CLAUDE.md 絶対規則 6)。RIR / 歌声の両経路で同じ規則。
+// 歌声分析の非同期化 (VocalAnalysisTab) — 完了時に「実行中に入力が
+// 変わったか」を判定する QtAcousticAdapter::vocalInputsEqual の検査。
+// 分析が読む設定の変化は必ず検出し (偽の「同じ」は古い結果を今の設定の
+// 結果として見せる)、読まない設定の変化では結果を捨てない (他タブの編集で
+// 毎回破棄されると非同期化が台無し)。後者は実ファイルの分析結果が実際に
+// 一致することまで確かめる。
+static void testVocalInputsEqual()
+{
+    g_file = "vocal-async";
+    using acoustics::AudioBuffer;
+    using audioedit::SignalKind;
+
+    OperaAcousticSettings base;
+    base.voicePath = "/tmp/aria.wav";
+    base.calibrationState = 0;           // Absolute (オフセットが効く)
+    base.calibrationOffsetDb = 94.0;
+    check(QtAcousticAdapter::vocalInputsEqual(base, base),
+          "vocal-eq: reflexive");
+
+    // 分析が読む設定 — どれが変わっても「違う」
+    {
+        OperaAcousticSettings t = base; t.voicePath = "/tmp/other.wav";
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: voicePath");
+        t = base; t.channelMode = 0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: channelMode");
+        t = base; t.voiceType = 3;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: voiceType");
+        t = base; t.vocalF0MinHz = 120.0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: f0 min");
+        t = base; t.vocalF0MaxHz = 900.0;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t), "vocal-eq: f0 max");
+        t = base; t.calibrationState = 2;
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: calibration state");
+        t = base; t.calibrationOffsetDb = 90.0;   // Absolute なので効く
+        check(!QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: offset matters when Absolute");
+    }
+    // 分析が読まない設定 — 変わっても「同じ」(結果を捨てない)
+    {
+        OperaAcousticSettings t = base;
+        t.rirPath = "/tmp/hall.wav";
+        t.bandMode = 3;
+        t.directSoundMethod = 0;
+        t.noiseCorrection = !base.noiseCorrection;
+        t.stConditionDeclared = true;
+        t.auralizationDryFile = "/tmp/dry.wav";
+        t.solverThreads = 16;
+        check(QtAcousticAdapter::vocalInputsEqual(base, t),
+              "vocal-eq: unrelated (RIR / auralization / solver) edits ignored");
+        // Relative / Uncalibrated ではオフセットは分析に渡らない (0 に落ちる)
+        OperaAcousticSettings r1 = base, r2 = base;
+        r1.calibrationState = r2.calibrationState = 1;
+        r2.calibrationOffsetDb = 10.0;
+        check(QtAcousticAdapter::vocalInputsEqual(r1, r2),
+              "vocal-eq: unused offset ignored when not Absolute");
+    }
+
+    // 「同じ」と判定した 2 つの設定で、実ファイルの分析結果が実際に一致する
+    QTemporaryDir dir;
+    check(dir.isValid(), "vocal-eq: temp dir");
+    if (!dir.isValid()) return;
+    const QString wav = dir.filePath("voice.wav");
+    const AudioBuffer v =
+        audioedit::generateSignal(SignalKind::Sine, 220.0, 0, 1.0, 0.3, 48000.0);
+    check(acoustics::writeWavFile(wav.toStdString(), v).success(),
+          "vocal-eq: voice written");
+    OperaAcousticSettings a = base;
+    a.voicePath = wav;
+    OperaAcousticSettings b = a;
+    b.rirPath = "/tmp/hall.wav";
+    b.bandMode = 2;
+    check(QtAcousticAdapter::vocalInputsEqual(a, b), "vocal-eq: pair is equal");
+    const auto ra = QtAcousticAdapter::analyzeVocalFile(a.voicePath, a);
+    const auto rb = QtAcousticAdapter::analyzeVocalFile(b.voicePath, b);
+    check(ra.success() && rb.success(), "vocal-eq: both analyses succeed");
+    if (ra.success() && rb.success()) {
+        const acoustics::VocalAnalysisResult &x = ra.value(), &y = rb.value();
+        check(x.voicedFrameCount == y.voicedFrameCount
+                  && x.f0MedianHz.valid == y.f0MedianHz.valid
+                  && x.f0MedianHz.value == y.f0MedianHz.value
+                  && x.hnrDb.value == y.hnrDb.value,
+              "vocal-eq: equal inputs give bit-identical results");
+        check(x.f0MedianHz.valid && std::fabs(x.f0MedianHz.value - 220.0) < 2.0,
+              "vocal-eq: analysis really ran (F0 median ~220 Hz)");
+    }
+}
+
 static void testCalibrationOffsetGate()
 {
     g_file = "calib-offset";
@@ -6229,6 +6386,120 @@ static void testOpticsMaterials()
 //   - 四分の一波長積層 (HL)^N H は Y = (nH/nL)^{2N}·nH²/ns の閉形式
 //   - 全反射条件で R = 1, T = 0
 //   - 無損失系で R + T = 1 (エネルギー保存)
+static void testThinFilmField()
+{
+    using namespace ofd::optics;
+    g_file = "thinfilm-field";
+    const double kPi = 3.14159265358979323846;
+    auto regionPts = [](const FieldProfile &f, int region) {
+        std::vector<FieldPoint> v;
+        for (const FieldPoint &p : f.pts) if (p.region == region) v.push_back(p);
+        return v;
+    };
+
+    // ── (1) 膜なし界面 (垂直入射): 定在波と透過波の閉形式 ──────────────────
+    // r = (n0−ns)/(n0+ns) < 0 なので表面が節: |E|² の最小 (1−|r|)² が z = 0、
+    // 最大 (1+|r|)² が z = −λ/(4n0)。基板内は |t|² = (2n0/(n0+ns))² で一定。
+    {
+        const double n0 = 1.0, ns = 1.52, lam = 550.0;
+        const FieldProfile f = fieldProfileS(n0, {}, ns, 0.0, lam, 0.0, 64, lam, 200.0);
+        check(f.valid, "field: bare interface valid");
+        const double r = (n0 - ns) / (n0 + ns);
+        const double t2 = std::pow(2.0 * n0 / (n0 + ns), 2);
+        const std::vector<FieldPoint> inc = regionPts(f, -1), sub = regionPts(f, 0);
+        check(!inc.empty() && !sub.empty(), "field: bare has incident and substrate points");
+        double mx = 0, mn = 1e9, subDev = 0;
+        for (const FieldPoint &p : inc) { mx = std::max(mx, p.e2); mn = std::min(mn, p.e2); }
+        for (const FieldPoint &p : sub) subDev = std::max(subDev, std::fabs(p.e2 - t2));
+        check(std::fabs(mx - (1 + std::fabs(r)) * (1 + std::fabs(r))) < 1e-9,
+              "field: bare standing-wave max = (1+|r|)^2");
+        check(std::fabs(mn - (1 - std::fabs(r)) * (1 - std::fabs(r))) < 1e-9,
+              "field: bare standing-wave min = (1-|r|)^2");
+        check(std::fabs(inc.back().e2 - t2) < 1e-12 && inc.back().z_nm == 0.0,
+              "field: bare surface |E|^2 = |t|^2");
+        check(subDev < 1e-12, "field: lossless substrate |E|^2 constant = |t|^2");
+        check(std::fabs(ns / n0 * sub.front().e2 - f.T) < 1e-12,
+              "field: T = (ns/n0)|Es/E0+|^2");
+        check(f.boundary_nm.size() == 1 && f.layerA.empty(),
+              "field: bare has one boundary and no layers");
+    }
+
+    // ── (2) 1/4 波長の単層 AR (n1 = √ns): R = 0 なので入射側に定在波が無い ──
+    {
+        const double ns = 1.52, lam = 550.0, n1 = std::sqrt(ns);
+        const FieldProfile f = fieldProfileS(1.0, { { n1, 0.0, lam / (4 * n1) } },
+                                             ns, 0.0, lam, 0.0, 64, lam, 0.0);
+        check(f.valid && f.R < 1e-20, "field: quarter-wave AR has R = 0");
+        double dev = 0;
+        for (const FieldPoint &p : regionPts(f, -1)) dev = std::max(dev, std::fabs(p.e2 - 1.0));
+        check(dev < 1e-9, "field: AR incident medium |E|^2 = 1 everywhere (no standing wave)");
+    }
+
+    // ── (3) 多層膜: 界面で接線電界が連続、無損失なら層の吸収 0 ───────────────
+    {
+        const double lam = 550.0, nH = 2.35, nL = 1.46;
+        std::vector<FilmLayer> L;
+        for (int i = 0; i < 5; ++i)
+            L.push_back({ (i % 2) ? nL : nH, 0.0, lam / (4 * ((i % 2) ? nL : nH)) });
+        for (double aoi : { 0.0, 40.0 }) {
+            const FieldProfile f = fieldProfileS(1.0, L, 1.52, 0.0, lam, aoi, 64, 200.0, 100.0);
+            check(f.valid && f.boundary_nm.size() == L.size() + 1,
+                  "field: HL stack valid with N+1 boundaries");
+            int jumps = 0, pairs = 0;
+            for (size_t i = 1; i < f.pts.size(); ++i) {
+                if (f.pts[i].region == f.pts[i - 1].region) continue;
+                ++pairs;
+                if (f.pts[i].z_nm != f.pts[i - 1].z_nm
+                    || std::fabs(f.pts[i].e2 - f.pts[i - 1].e2)
+                           > 1e-12 * std::max(1.0, f.pts[i].e2)) ++jumps;
+            }
+            check(pairs == int(L.size()) + 1 && jumps == 0,
+                  "field: tangential E continuous at every interface");
+            double asum = 0;
+            for (double a : f.layerA) asum += a;
+            check(asum == 0.0, "field: lossless layers absorb nothing");
+            // 斜入射の T = Re(qs)/(n0 cosθ0)·|Es/E0+|² (s 偏波)
+            const double th = aoi * kPi / 180.0;
+            const double qs = std::sqrt(1.52 * 1.52 - std::pow(std::sin(th), 2));
+            const std::vector<FieldPoint> sub = regionPts(f, int(L.size()));
+            check(!sub.empty() && std::fabs(qs / std::cos(th) * sub.front().e2 - f.T) < 1e-10,
+                  "field: T from substrate field matches characteristic matrix");
+        }
+    }
+
+    // ── (4) 吸収のある膜: 分布を体積積分した吸収の合計 = 1 − R − T ──────────
+    // (Poynting の定理。分布の値そのものの検算で、正規化 E0+ や斜入射の
+    //  入射電力 n0·cosθ0 を取り違えるとここが落ちる)
+    {
+        const double lam = 550.0;
+        const std::vector<FilmLayer> L = { { 2.30, 0.01, 60.0 },
+                                           { 0.13, 3.20, 20.0 },   // 銀相当
+                                           { 1.46, 0.00, 90.0 } };
+        for (double aoi : { 0.0, 30.0, 60.0 }) {
+            const FieldProfile f = fieldProfileS(1.0, L, 1.52, 0.0, lam, aoi);
+            double asum = 0;
+            for (double a : f.layerA) asum += a;
+            check(f.valid && f.A > 0.01, "field: absorbing stack has A > 1%");
+            check(std::fabs(asum - f.A) < 1e-6,
+                  "field: sum of layer absorption from |E|^2 = 1 - R - T");
+            check(f.layerA[1] > f.layerA[0] && f.layerA[2] == 0.0,
+                  "field: metal layer absorbs most, lossless layer none");
+        }
+        // 吸収する基板 (k > 0) では基板内で減衰する
+        const FieldProfile g = fieldProfileS(1.0, {}, 1.5, 0.2, lam, 0.0, 64, 0.0, 300.0);
+        const std::vector<FieldPoint> sub = regionPts(g, 0);
+        const double expect = sub.front().e2 * std::exp(-4.0 * kPi * 0.2 * 300.0 / lam);
+        check(g.valid && std::fabs(sub.back().e2 - expect) < 1e-12 * sub.front().e2,
+              "field: absorbing substrate decays as exp(-4 pi k z / lambda)");
+    }
+
+    // ── (5) 不正入力 ───────────────────────────────────────────────────────
+    check(!fieldProfileS(1.0, {}, 1.5, 0.0, 0.0, 0.0).valid, "field: lambda <= 0 rejected");
+    check(!fieldProfileS(1.0, {}, 1.5, 0.0, 550.0, 0.0, 64, -1.0).valid,
+          "field: negative front length rejected");
+    check(!fieldProfileS(1.0, {}, 1.5, 0.0, 550.0, 90.0).valid, "field: grazing incidence rejected");
+}
+
 static void testThinFilmStack()
 {
     using namespace ofd::optics;
@@ -11609,6 +11880,149 @@ static void testNotchCandidates()
           && notchCandidates(L, W, H, c, 0.0, 0).empty()
           && notchCandidates(L, W, H, 0.0, T, 0).empty(),
           "notch: non-positive inputs yield no candidates");
+}
+
+// 可変音響 (反射板・吸音バナー・ピット蓋・電子残響) — RoomAcousticsTab の
+// 「各構成で一括解析」の計算部。期待値は Sabine の閉形式 RT = 0.161·V/A を
+// テスト側で独立に組み立てて比べる (実装の吸音力を読み返さない)。
+static void testVariableAcoustics()
+{
+    using namespace roomac;
+    g_file = "var-acoustics";
+    const double V = 10000.0;
+    auto sab = [V](double A) { return 0.161 * V / A; };
+    auto close = [](double x, double y) {
+        return std::fabs(x - y) <= 1e-9 * std::max(1.0, std::fabs(y));
+    };
+
+    AcousticOpts a;
+    a.volume = V;
+    a.surface = 3000;
+    a.occupancy = 2;
+    auto row = [](int role, double area, double al) {
+        AbsorptionRow r;
+        r.role = role;
+        r.area = area;
+        for (double &x : r.alpha) x = al;
+        return r;
+    };
+    a.absorption = { row(AbsorptionRow::SideWall, 400, 0.10),
+                     row(AbsorptionRow::Ceiling,  600, 0.30),
+                     row(AbsorptionRow::Floor,    500, 0.20) };
+    // 基準の吸音力 A0 = 40 + 180 + 100 = 320 Sabin
+
+    QVector<VaMechanism> m(3);
+    m[0].key = "opening";                 // 開口 (バジェット外の面を足す)
+    m[0].role = AbsorptionRow::RearWall;
+    m[0].area = 100;
+    for (int b = 0; b < 6; ++b) { m[0].alpha[0][b] = 0.10; m[0].alpha[1][b] = 0.60; }
+    m[1].key = "banner";                  // 側壁を覆う
+    m[1].role = AbsorptionRow::SideWall;
+    m[1].replaces = true;
+    m[1].area = 150;
+    m[1].hasAlpha[1] = false;             // 巻取 = バジェットのまま
+    for (int b = 0; b < 6; ++b) m[1].alpha[0][b] = 0.70;
+    m[2].key = "electronic";              // 能動系
+    m[2].active = true;
+
+    // 開口: 状態 0 (α 0.1) → A = 320 + 10、状態 1 (α 0.6) → A = 320 + 60
+    {
+        const VaCase c0 = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        const VaCase c1 = variableAcousticsCase(a, m, { 1, 1, 0 }, 0);
+        check(c0.ok && c1.ok, "va: cases computed");
+        bool all0 = true, all1 = true;
+        for (int b = 0; b < 6; ++b) {
+            all0 = all0 && close(c0.rt[b], sab(330));
+            all1 = all1 && close(c1.rt[b], sab(380));
+        }
+        check(all0, "va: opening state 0 adds S*alpha0 (Sabine closed form)");
+        check(all1, "va: opening state 1 adds S*alpha1 (Sabine closed form)");
+        check(close(c0.rtMid, 0.5 * (c0.rt[2] + c0.rt[3])), "va: T_mid = (T500+T1k)/2");
+        check(c0.rtMid > c1.rtMid, "va: more absorptive state gives shorter RT");
+    }
+    // 覆う機構: 側壁 400 → 250 (α 0.1) + バナー 150 (α 0.7)
+    //   A = 25 + 180 + 100 + 10 (開口 状態0) + 105 = 420
+    {
+        const VaCase c = variableAcousticsCase(a, m, { 0, 0, 0 }, 0);
+        check(c.ok && close(c.rt[3], sab(420)),
+              "va: covering mechanism replaces wall area (Sabine closed form)");
+        // 覆っても載っている面積の合計は変わらない (Eyring の S と整合)
+        const VaCase u = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        check(close(c.listedArea, 1600) && close(u.listedArea, 1600),
+              "va: covering keeps listed area (1500 + 100 opening)");
+    }
+    // 同じ role の行が複数あれば面積比で按分する:
+    //   側壁 300 (α0.1) + 100 (α0.2) から 200 を覆う → 150 + 50 が残る
+    {
+        AcousticOpts b2 = a;
+        b2.absorption = { row(AbsorptionRow::SideWall, 300, 0.10),
+                          row(AbsorptionRow::SideWall, 100, 0.20),
+                          row(AbsorptionRow::Ceiling,  600, 0.30) };
+        QVector<VaMechanism> one = { m[1] };
+        one[0].area = 200;
+        const VaCase c = variableAcousticsCase(b2, one, { 0 }, 0);
+        // A = 150·0.1 + 50·0.2 + 180 + 200·0.7 = 15 + 10 + 180 + 140 = 345
+        check(c.ok && close(c.rt[0], sab(345)),
+              "va: covered area split across rows by area ratio");
+    }
+    // 能動系は受動計算に入らない / 無効な機構は何も変えない
+    {
+        const VaCase off = variableAcousticsCase(a, m, { 0, 1, 0 }, 0);
+        const VaCase on  = variableAcousticsCase(a, m, { 0, 1, 1 }, 0);
+        check(on.ok && on.rtMid == off.rtMid,
+              "va: active (electronic) mechanism ignored by passive model");
+        QVector<VaMechanism> none = m;
+        for (VaMechanism &x : none) x.enabled = false;
+        bool same = true;
+        const VaCase n = variableAcousticsCase(a, none, { 0, 0, 1 }, 1);
+        for (int b = 0; b < 6; ++b) same = same && n.rt[b] == rt60(a, b, 1);
+        check(n.ok && same,
+              "va: all mechanisms disabled = base budget (bit-identical, Eyring)");
+    }
+    // 覆う面が足りなければ計算しない (理由を返す)
+    {
+        QVector<VaMechanism> big = m;
+        big[1].area = 500;   // 側壁は 400 しか無い
+        const VaCase c = variableAcousticsCase(a, big, { 0, 0, 0 }, 1);
+        check(!c.ok && c.failedMech == 1 && close(c.haveArea, 400),
+              "va: insufficient wall area reported (mechanism + available area)");
+        const VaCase rolled = variableAcousticsCase(a, big, { 0, 1, 0 }, 1);
+        check(rolled.ok, "va: rolled-up banner does not need the wall area");
+    }
+    // 載っている面積が総表面積 S を超えたら注意を立てる (計算はする)
+    {
+        AcousticOpts t = a;
+        t.surface = 1550;   // 1500 + 開口 100 = 1600 > 1550
+        const VaCase c = variableAcousticsCase(t, m, { 0, 1, 0 }, 1);
+        const VaCase ok = variableAcousticsCase(a, m, { 0, 1, 0 }, 1);
+        check(c.ok && c.overSurface && !ok.overSurface,
+              "va: listed area over total surface S is flagged");
+    }
+    // 既定の機構と用途別構成 (既定プロジェクトの吸音バジェット・Eyring)
+    {
+        const QVector<VaMechanism> d = defaultVaMechanisms();
+        check(d.size() == 4 && d[3].active && !d[0].active,
+              "va: 4 default mechanisms, electronic is the active one");
+        bool lens = true;
+        for (int p = 0; p < 4; ++p) lens = lens && vaPresetStates(p).size() == d.size();
+        check(lens, "va: presets give one state per mechanism");
+        Project proj;
+        const AcousticOpts &pa = proj.acoustic();
+        double mid[4];
+        bool allOk = true;
+        for (int p = 0; p < 4; ++p) {
+            const VaCase c = variableAcousticsCase(pa, d, vaPresetStates(p),
+                                                   pa.rtFormula);
+            allOk = allOk && c.ok && !c.overSurface;
+            mid[p] = c.rtMid;
+        }
+        check(allOk, "va: default hall computes all 4 presets within S");
+        // 吸音の大小から決まる順序: コンサート (反射板) > オペラ (舞台開口 +
+        // ピット開口) > 講演 (舞台開口 + バナー)。講演とポピュラーは同じ受動構成
+        check(mid[0] > mid[1] && mid[1] > mid[2],
+              "va: concert > opera > speech in T_mid");
+        check(mid[2] == mid[3], "va: speech and popular share the passive config");
+    }
 }
 
 static void testRoomModes()
@@ -22571,6 +22985,143 @@ static void testEncircledEnergy()
 // 回折限界は「2 つの円の重なり面積」の閉形式なので、**面積を数値積分で
 // 独立に出して**突き合わせる。幾何 MTF は等間隔に並べた光線なら
 // Dirichlet 核が厳密解になるので、それと突き合わせる。
+static void testWavefront()
+{
+    using namespace ofd;
+    g_file = "lens-wavefront";
+    // 中心 (ρ = 0) と瞳端 (ρ = 1、py = ±1) の W を拾う
+    auto wAt = [](const wavefront::Map &m, double px, double py) {
+        for (std::size_t i = 0; i < m.w_mm.size(); ++i)
+            if (std::fabs(m.px[i] - px) < 1e-12 && std::fabs(m.py[i] - py) < 1e-12)
+                return m.w_mm[i];
+        return std::nan("");
+    };
+
+    // ── (1) 完全結像する楕円面: 回転楕円面 k = −1/n² の 1 面は無限遠の
+    //        軸上物点を後側焦点 nR/(n−1) へ無収差で結ぶ (デカルトの卵形)
+    {
+        const double n = 1.5, R = 20.0, f = n * R / (n - 1);
+        raytrace::System s;
+        raytrace::Surface a;
+        a.R = R; a.conic = -1.0 / (n * n); a.nAfter = n; a.stop = true;
+        s.surfaces = { a };
+        s.imageDistance = f;
+        const wavefront::Map m = wavefront::wavefrontMap(s, 10.0, 0.0, 21);
+        check(m.valid && m.failed == 0, "wavefront: ellipsoid traced");
+        check(m.pv_mm < 1e-11, "wavefront: Cartesian ellipsoid is aberration-free (P-V ~ 0)");
+        check(std::fabs(m.exitPupilZ) < 1e-12 && std::fabs(m.refRadius - f) < 1e-9,
+              "wavefront: stop on the only surface -> exit pupil at its vertex, radius = f");
+        // 21 × 21 の格子で単位円に入る点の数
+        int inside = 0;
+        for (int iy = 0; iy < 21; ++iy)
+            for (int ix = 0; ix < 21; ++ix) {
+                const double px = -1 + 0.1 * ix, py = -1 + 0.1 * iy;
+                if (px * px + py * py <= 1.0 + 1e-12) ++inside;
+            }
+        check(m.traced == inside, "wavefront: every pupil sample inside the unit circle traced");
+
+        // 焦点ずれ δ: 参照球の中心を δ ずらすと周縁光線の W は
+        // n·δ·(1 − cos U') だけ変わる (U' = 周縁光線の像側の角度。δ の 1 次で厳密)
+        const raytrace::RayResult mr = raytrace::traceRay(s, 10.0, 0.0, 0.0, 1.0);
+        for (double d : { 0.02, -0.02 }) {
+            s.imageDistance = f + d;
+            const wavefront::Map md = wavefront::wavefrontMap(s, 10.0, 0.0, 21);
+            const double dw = wAt(md, 0.0, 1.0) - wAt(md, 0.0, 0.0);
+            const double expect = n * d * (1.0 - mr.N);
+            check(md.valid && std::fabs(dw - expect) < 0.01 * std::fabs(expect),
+                  "wavefront: defocus W(edge) = n*delta*(1 - cos U') (1%)");
+        }
+    }
+
+    // ── (2) 単レンズの 3 次収差 = Seidel 和 (Welford の展開と同じ符号) ────────
+    //   W = S_I/8 ρ⁴ + S_II/2 Hρ³cosφ + S_III/2 H²ρ²cos²φ + (S_III+S_IV)/4 H²ρ²
+    //   Fringe Zernike では W040 = 6·Z9、W131 = 3·Z8、W222 = −2·Z5、
+    //   ρ² の係数 2·Z4 − 6·Z9 = S_III/2 + S_IV/4 (平面の像面上)。
+    //   F/25・視野 2° では 5 次以上の寄与は 1 % 未満 (開口を半分にすると
+    //   球面の差が縮むことも合わせて見る — 高次なら開口の 2 乗以上で消える)。
+    {
+        std::vector<paraxial::Surface> ps(2);
+        ps[0].R = 50; ps[0].thickness = 5; ps[0].nAfter = 1.5168; ps[0].stop = true;
+        ps[1].R = -50; ps[1].thickness = 0; ps[1].nAfter = 1.0;
+        const paraxial::SystemData pd = paraxial::analyze(ps, -1, 4.0, 0.0);
+        raytrace::System s;
+        s.surfaces = raytrace::fromParaxial(ps);
+        s.imageDistance = pd.bfl;
+
+        // 射出瞳 = 第 1 面 (絞り) を第 2 面で近軸結像した位置 (閉形式)
+        const double nG = 1.5168, P2 = (1.0 - nG) / -50.0;
+        const double xpExpect = 1.0 / (P2 + nG / -5.0);
+        bool ok = false;
+        const double xp = wavefront::exitPupilZ(s, &ok);
+        check(ok && std::fabs(xp - xpExpect) < 1e-12, "wavefront: exit pupil = paraxial image of the stop");
+
+        double relErr[2] = { 0, 0 };
+        const double epds[2] = { 4.0, 2.0 };
+        for (int k = 0; k < 2; ++k) {
+            const seidel::Result sd = seidel::analyze(ps, epds[k], 2.0);
+            const wavefront::Map m0 = wavefront::wavefrontMap(s, epds[k], 0.0, 31);
+            const wavefront::ZernikeFit z0 = wavefront::fitFringe(m0.px, m0.py, m0.w_mm);
+            check(m0.valid && z0.valid, "wavefront: singlet on-axis map and fit");
+            relErr[k] = std::fabs(6.0 * z0.c[8] - sd.sI / 8.0) / std::fabs(sd.sI / 8.0);
+            double asym = 0.0;
+            for (int j : { 1, 2, 4, 5, 6, 7 }) asym = std::max(asym, std::fabs(z0.c[j]));
+            check(asym < 1e-6 * std::fabs(z0.c[8]),
+                  "wavefront: on-axis map has no tilt/astigmatism/coma (rotational symmetry)");
+            if (k == 1) {
+                const wavefront::Map m2 = wavefront::wavefrontMap(s, epds[k], 2.0, 31);
+                const wavefront::ZernikeFit z2 = wavefront::fitFringe(m2.px, m2.py, m2.w_mm);
+                check(m2.valid && z2.valid, "wavefront: singlet 2 deg map and fit");
+                check(std::fabs(3.0 * z2.c[7] - sd.sII / 2.0) < 0.01 * std::fabs(sd.sII / 2.0),
+                      "wavefront: coma W131 = 3*Z8 = S_II/2 (1%)");
+                check(std::fabs(-2.0 * z2.c[4] - sd.sIII / 2.0) < 0.01 * std::fabs(sd.sIII / 2.0),
+                      "wavefront: astigmatism W222 = -2*Z5 = S_III/2 (1%)");
+                const double curv = 2.0 * z2.c[3] - 6.0 * z2.c[8];
+                const double curvS = sd.sIII / 2.0 + sd.sIV / 4.0;
+                check(std::fabs(curv - curvS) < 0.01 * std::fabs(curvS),
+                      "wavefront: rho^2 term = S_III/2 + S_IV/4 (1%)");
+                // 主光線基準なのでべき級数に ρcosφ (傾き) の項は無い。Fringe の
+                // Z8 = (3ρ³ − 2ρ)sinθ が −2ρ を含むので、その分だけ Z3 = 2·Z8。
+                // 無限遠物体の光路長を入射平面波の波面から測り忘れると、
+                // 斜入射で始点の面がずれた分がここへ傾きとして乗る
+                check(std::fabs(z2.c[2] - 2.0 * z2.c[7]) < 0.001 * std::fabs(z2.c[7]),
+                      "wavefront: no pure tilt about the chief ray (Z3 = 2*Z8)");
+                check(std::fabs(z2.c[5]) < 1e-6 * std::fabs(z2.c[4])
+                          && std::fabs(z2.c[6]) < 1e-6 * std::fabs(z2.c[7]),
+                      "wavefront: field along y gives no x-coma / 45-deg astigmatism");
+            }
+        }
+        check(relErr[1] < 0.005, "wavefront: spherical W040 = 6*Z9 = S_I/8 at F/25 (0.5%)");
+        check(relErr[1] < relErr[0], "wavefront: higher-order difference shrinks with aperture");
+    }
+
+    // ── (3) Zernike の当てはめは合成した係数を厳密に返す ────────────────────
+    {
+        const double cTrue[9] = { 0.3, -0.1, 0.2, 0.05, -0.07, 0.02, 0.04, -0.03, 0.06 };
+        std::vector<double> px, py, w;
+        for (int iy = 0; iy < 25; ++iy)
+            for (int ix = 0; ix < 25; ++ix) {
+                const double x = -1 + ix / 12.0, y = -1 + iy / 12.0;
+                if (x * x + y * y > 1.0) continue;
+                double v = 0.0;
+                for (int j = 0; j < 9; ++j) v += cTrue[j] * wavefront::fringeZernike(j + 1, x, y);
+                px.push_back(x); py.push_back(y); w.push_back(v);
+            }
+        const wavefront::ZernikeFit z = wavefront::fitFringe(px, py, w);
+        double err = 0.0;
+        for (int j = 0; j < 9; ++j) err = std::max(err, std::fabs(z.c[j] - cTrue[j]));
+        check(z.valid && err < 1e-12 && z.residualRms < 1e-12,
+              "wavefront: Fringe fit recovers synthetic coefficients exactly");
+        check(!wavefront::fitFringe({ 0.0 }, { 0.0 }, { 1.0 }).valid,
+              "wavefront: fit with fewer points than terms rejected");
+    }
+
+    // ── (4) 不正入力 ───────────────────────────────────────────────────────
+    {
+        raytrace::System s;
+        check(!wavefront::wavefrontMap(s, 4.0, 0.0, 21).valid, "wavefront: empty system rejected");
+    }
+}
+
 static void testMtf()
 {
     g_file = "mtf";
@@ -27687,6 +28238,7 @@ int main(int argc, char *argv[])
     testVoxelizer();
     testGlassCatalog();
     testRoomAcoustics();
+    testVariableAcoustics();
     testOperaAcousticSettings();
     testProjectTemplates();
     testAcousticBudgets();
@@ -27696,6 +28248,7 @@ int main(int argc, char *argv[])
     testAudioEditEngine();
     testMovieExport();
     testCalibrationOffsetGate();
+    testVocalInputsEqual();
     testResampler();
     testRirSampleRateNotes();
     testAcousticPreflight();
@@ -27707,6 +28260,7 @@ int main(int argc, char *argv[])
     testRcwaIncidence();
     testOpticsMaterials();
     testThinFilmStack();
+    testThinFilmField();
     testFilmNotation();
     testOpticalModeSettings();
     testBellhop();
@@ -27804,6 +28358,7 @@ int main(int argc, char *argv[])
     testRayPaths();
     testCourantFromAccuracy();
     testMtf();
+    testWavefront();
     testEncircledEnergy();
     testDistortionGrid();
     testFieldCurvature();

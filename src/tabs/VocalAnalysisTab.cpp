@@ -11,14 +11,20 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QThread>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <exception>
+#include <memory>
+#include <optional>
+#include <string>
 
 using namespace ofd;
 using namespace ofd::acoustics;
@@ -226,23 +232,63 @@ void VocalAnalysisTab::browseVoice()
 // ── analysis ────────────────────────────────────────────────────────────────
 void VocalAnalysisTab::runAnalysis()
 {
+    if (m_busy) return;
     apply();
-    const OperaAcousticSettings &s = m_p->operaAcoustic();
-    if (s.voicePath.trimmed().isEmpty()) {
+    // 入力は値で捕捉する — 実行中にモデルが書き換わってもワーカーが
+    // 読むのはこのコピーだけ (スレッド間でモデルを共有しない)
+    const OperaAcousticSettings snap = m_p->operaAcoustic();
+    if (snap.voicePath.trimmed().isEmpty()) {
         clearResult(I18n::tr("vocal_status_nofile"));
         return;
     }
 
-    const AcousticResult<VocalAnalysisResult> res =
-        QtAcousticAdapter::analyzeVocalFile(s.voicePath, s);
-    if (!res.success()) {
-        clearResult(I18n::tr("vocal_status_error")
-                        .arg(QString::fromUtf8(
-                                 acousticErrorCodeName(res.errorCode())),
-                             QString::fromStdString(res.message())));
-        return;
-    }
-    showResult(res.value());
+    // 分析は ~33 ms / 音声 1 秒 (3 分のアリアで約 6 秒) — GUI スレッドで
+    // 回すと画面が固まるので QThread で実行する (gui.md)
+    m_busy = true;
+    m_runBtn->setEnabled(false);
+    m_status->setText(I18n::tr("vocal_status_running")
+                          .arg(QFileInfo(snap.voicePath).fileName()));
+    using Res = AcousticResult<VocalAnalysisResult>;
+    auto out = std::make_shared<std::optional<Res>>();
+    auto fault = std::make_shared<std::string>();
+    // 例外をスレッド外へ漏らさない (QThread 内で投げると std::terminate)
+    QThread *th = QThread::create([snap, out, fault] {
+        try {
+            out->emplace(
+                QtAcousticAdapter::analyzeVocalFile(snap.voicePath, snap));
+        } catch (const std::exception &e) {
+            *fault = e.what();
+        } catch (...) {
+            *fault = "unknown exception";
+        }
+    });
+    // スレッド自体の後始末はタブの寿命と切り離す (タブが先に消えても漏れない)
+    connect(th, &QThread::finished, th, &QObject::deleteLater);
+    connect(th, &QThread::finished, this, [this, snap, out, fault] {
+        m_busy = false;
+        m_runBtn->setEnabled(true);
+        // 実行中に分析の入力 (ファイル・声種・F0 範囲・チャンネル・校正) が
+        // 変わっていたら、結果は今の画面の設定に対応しない — 表示しない
+        if (!QtAcousticAdapter::vocalInputsEqual(snap, m_p->operaAcoustic())) {
+            clearResult(I18n::tr("vocal_status_stale"));
+            return;
+        }
+        if (!out->has_value()) {   // 例外でワーカーが結果を残せなかった
+            clearResult(I18n::tr("vocal_status_internal")
+                            .arg(QString::fromStdString(*fault)));
+            return;
+        }
+        const Res &res = out->value();
+        if (!res.success()) {
+            clearResult(I18n::tr("vocal_status_error")
+                            .arg(QString::fromUtf8(
+                                     acousticErrorCodeName(res.errorCode())),
+                                 QString::fromStdString(res.message())));
+            return;
+        }
+        showResult(res.value());
+    });
+    th->start();
 }
 
 void VocalAnalysisTab::clearResult(const QString &statusText)

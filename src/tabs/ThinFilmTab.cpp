@@ -225,6 +225,42 @@ const bool s_i18n = [] {
     I18n::reg("tfc_btn_field", "📐 電界分布 (層内)",
               "📐 Field distribution (inside the stack)");
     I18n::reg("tfc_btn_fdtd",  "🔍 FDTDで検証", "🔍 Verify with FDTD");
+    I18n::reg("tfc_field_on",  "📐 電界分布 (閉じる)", "📐 Field distribution (close)");
+    I18n::reg("tfc_field_x",   "表面からの深さ z [nm] (負 = 入射媒質)",
+                               "depth from the surface z [nm] (negative = incident medium)");
+    I18n::reg("tfc_field_y",   "|E/E0+|²", "|E/E0+|²");
+    I18n::reg("tfc_field_inc", "入射媒質", "incident medium");
+    I18n::reg("tfc_field_odd", "奇数層", "odd layers");
+    I18n::reg("tfc_field_even","偶数層", "even layers");
+    I18n::reg("tfc_field_sub", "基板", "substrate");
+    I18n::reg("tfc_field_note",
+        "▸ 設計波長 λ₀ = %1 nm・入射角 %2° の s 偏波で、特性行列を層の途中で"
+        "打ち切って求めた電界の強さ |E/E0+|² です (E0+ = 入射波の電界。"
+        "垂直入射では偏波によりません。斜入射の p 偏波は法線方向の成分を"
+        "別に組み立てる必要があるので出していません)。最大 %3 (%4)、"
+        "膜の表面 %5。基板は透過波だけで、裏面の反射は含みません。",
+        "▸ The field strength |E/E0+|² for s polarization at the design "
+        "wavelength λ₀ = %1 nm and %2° incidence, obtained by stopping the "
+        "characteristic matrix partway through each layer (E0+ = incident "
+        "field; at normal incidence it does not depend on polarization; p "
+        "polarization at oblique incidence needs the normal component built "
+        "separately, so it is not shown). Peak %3 (%4), at the film surface "
+        "%5. The substrate carries the transmitted wave only; the rear-face "
+        "reflection is not included.");
+    I18n::reg("tfc_field_where_layer", "層 %1 の内部", "inside layer %1");
+    I18n::reg("tfc_field_where_inc",   "入射媒質", "in the incident medium");
+    I18n::reg("tfc_field_where_sub",   "基板", "in the substrate");
+    I18n::reg("tfc_field_abs",
+        "層ごとの吸収 (分布を体積で積分): %1 — 合計 %2 % (特性行列法の "
+        "1 − R − T = %3 %)",
+        "absorption per layer (volume integral of the distribution): %1 — "
+        "total %2 % (characteristic matrix 1 − R − T = %3 %)");
+    I18n::reg("tfc_field_lossless", "どの層も無損失 (k = 0) なので層内の吸収はありません",
+                                    "every layer is lossless (k = 0), so nothing is absorbed in the stack");
+    I18n::reg("tfc_field_fail",
+        "λ₀ = %1 nm で層構成を作れないため (材料データの範囲外など) 描けません",
+        "cannot be drawn: the stack cannot be built at λ₀ = %1 nm "
+        "(outside the material data, for example)");
 
     // 最適化設計
     I18n::reg("tfc_design_sec", "最適化設計 / Optimization", "Optimization");
@@ -1147,6 +1183,17 @@ QWidget *ThinFilmTab::buildSpecPage()
     m_mapNote->setVisible(false);
     s->vbox()->addWidget(m_mapNote);
 
+    // 層内の電界分布 (押されるまで隠しておく)
+    m_fieldPlot = new MiniPlot(s);
+    m_fieldPlot->setMinimumSize(360, 140);
+    m_fieldPlot->setVisible(false);
+    s->vbox()->addWidget(m_fieldPlot);
+    m_fieldNote = new QLabel(s);
+    m_fieldNote->setWordWrap(true);
+    m_fieldNote->setStyleSheet("font-size:11px; color:palette(mid);");
+    m_fieldNote->setVisible(false);
+    s->vbox()->addWidget(m_fieldNote);
+
     // R/T/A 表示中の注記 (A の出所と最大値)
     m_rtaNote = new QLabel(s);
     m_rtaNote->setWordWrap(true);
@@ -1177,14 +1224,13 @@ QWidget *ThinFilmTab::buildSpecPage()
     s->vbox()->addWidget(m_specNote);
 
     auto *btnRow = new QHBoxLayout();
-    // R/T は上の図と表が実計算値。以下 4 つの追加ビューは未配線 →
-    // 無効化 + 「未実装」ツールチップ
+    // R/T は上の図と表が実計算値。以下 4 つの追加ビューのうち、
+    // FDTD での検証だけが未配線 (無効化 + 「未実装」ツールチップ)
     auto *rtaBtn   = new QPushButton(I18n::tr("tfc_btn_rta"), s);
     auto *mapBtn   = new QPushButton(I18n::tr("tfc_btn_map"), s);
     auto *fieldBtn = new QPushButton(I18n::tr("tfc_btn_field"), s);
     auto *fdtdBtn  = new QPushButton(I18n::tr("tfc_btn_fdtd"), s);
-    // R/T/A は特性行列法の値から A = 1 − R − T で出せる (追加の計算は不要)。
-    // 残り 3 つは別の計算が要るので無効のまま
+    // R/T/A は特性行列法の値から A = 1 − R − T で出せる (追加の計算は不要)
     m_rtaBtn = rtaBtn;
     connect(rtaBtn, &QPushButton::clicked, this, [this] {
         m_showA = !m_showA;
@@ -1200,10 +1246,17 @@ QWidget *ThinFilmTab::buildSpecPage()
         recompute();
     });
     btnRow->addWidget(mapBtn);
-    for (QPushButton *b : { fieldBtn, fdtdBtn }) {
-        tabhelp::markNotImplemented(b, I18n::tr(tabhelp::notimpl::kEngine));
-        btnRow->addWidget(b);
-    }
+    // 層内の電界分布も同じ特性行列を層の途中で打ち切るだけ (optics::fieldProfileS)
+    m_fieldBtn = fieldBtn;
+    connect(fieldBtn, &QPushButton::clicked, this, [this] {
+        m_showField = !m_showField;
+        m_fieldBtn->setText(I18n::tr(m_showField ? "tfc_field_on" : "tfc_btn_field"));
+        recompute();
+    });
+    btnRow->addWidget(fieldBtn);
+    // FDTD での検証はカーネルへ渡す経路が要るので無効のまま
+    tabhelp::markNotImplemented(fdtdBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    btnRow->addWidget(fdtdBtn);
     btnRow->addStretch(1);
     s->vbox()->addLayout(btnRow);
     v->addWidget(s);
@@ -1553,6 +1606,83 @@ std::vector<optics::TargetBand> ThinFilmTab::targetBands() const
 
 // 現在の設定から λ [nm] の層構成を返すコールバックを作る。
 // 材料データの有効範囲外では false を返す (外挿しない)。
+void ThinFilmTab::refreshFieldProfile(const optics::StackAtLambda &fn,
+                                      double lam0, double aoi)
+{
+    optics::StackSample st;
+    if (!fn || !fn(lam0, st)) {
+        m_fieldPlot->setSeries({});
+        m_fieldNote->setText(I18n::tr("tfc_field_fail")
+                                 .arg(QString::number(lam0, 'f', 1)));
+        return;
+    }
+    // 入射側に λ₀/2 (定在波 1 周期分)、基板側に λ₀/4 を描く
+    const double front = 0.5 * lam0 / st.n0;
+    const double back  = 0.25 * lam0 / st.nsub;
+    const optics::FieldProfile f = optics::fieldProfileS(
+        st.n0, st.layers, st.nsub, st.ksub, lam0, aoi, 64, front, back);
+    if (!f.valid) {
+        m_fieldPlot->setSeries({});
+        m_fieldNote->setText(I18n::tr("tfc_field_fail")
+                                 .arg(QString::number(lam0, 'f', 1)));
+        return;
+    }
+    const int N = int(st.layers.size());
+    // 領域ごとに 1 本 (界面の点は両側の系列に入っているので線はつながる)
+    QVector<MiniSeries> series;
+    bool labeled[4] = { false, false, false, false };
+    double peak = -1.0, peakZ = 0.0, surface = 0.0;
+    int peakRegion = 0;
+    int cur = -2;                                 // region の最小は −1
+    for (const optics::FieldPoint &p : f.pts) {
+        if (p.region != cur) {
+            cur = p.region;
+            MiniSeries ms;
+            int kind;
+            if (cur < 0)       { kind = 0; ms.color = QColor("#8A8886"); }
+            else if (cur >= N) { kind = 3; ms.color = QColor("#107C10"); }
+            else if (cur % 2)  { kind = 2; ms.color = QColor("#CA5010"); }
+            else               { kind = 1; ms.color = QColor("#0078D4"); }
+            static const char *const kLabel[4] = {
+                "tfc_field_inc", "tfc_field_odd", "tfc_field_even", "tfc_field_sub" };
+            if (!labeled[kind]) { ms.label = I18n::tr(kLabel[kind]); labeled[kind] = true; }
+            series << ms;
+        }
+        series.last().pts.push_back({ p.z_nm, p.e2 });
+        if (p.e2 > peak) { peak = p.e2; peakZ = p.z_nm; peakRegion = p.region; }
+        if (p.z_nm == 0.0) surface = p.e2;
+    }
+    m_fieldPlot->setLabels(I18n::tr("tfc_field_x"), I18n::tr("tfc_field_y"));
+    m_fieldPlot->setSeries(series);
+
+    QString where;
+    if (peakRegion < 0)       where = I18n::tr("tfc_field_where_inc");
+    else if (peakRegion >= N) where = I18n::tr("tfc_field_where_sub");
+    else                      where = I18n::tr("tfc_field_where_layer").arg(peakRegion + 1);
+    where += QStringLiteral(", z = %1 nm").arg(QString::number(peakZ, 'f', 1));
+    QString note = I18n::tr("tfc_field_note")
+        .arg(QString::number(lam0, 'f', 1), QString::number(aoi, 'f', 0),
+             QString::number(peak, 'f', 3), where,
+             QString::number(surface, 'f', 3));
+    double asum = 0.0;
+    QStringList parts;
+    for (int j = 0; j < N; ++j) {
+        asum += f.layerA[j];
+        if (st.layers[j].k > 0.0)
+            parts << QStringLiteral("#%1 %2 %").arg(j + 1)
+                         .arg(QString::number(pct(f.layerA[j]), 'f', 2));
+    }
+    note += QStringLiteral("\n");
+    if (parts.isEmpty())
+        note += I18n::tr("tfc_field_lossless");
+    else
+        note += I18n::tr("tfc_field_abs")
+            .arg(parts.join(QStringLiteral(", ")),
+                 QString::number(pct(asum), 'f', 2),
+                 QString::number(pct(f.A), 'f', 2));
+    m_fieldNote->setText(note);
+}
+
 optics::StackAtLambda ThinFilmTab::makeStackFn() const
 {
     struct Setup {
@@ -1701,6 +1831,11 @@ void ThinFilmTab::recompute()
                      QString::number(aoiDeg(), 'f', 0))
                 .arg(QString::number(m_map->vmax() * 100.0, 'f', 2)));
         }
+    }
+    if (m_fieldPlot && m_fieldNote) {
+        m_fieldPlot->setVisible(m_showField);
+        m_fieldNote->setVisible(m_showField);
+        if (m_showField) refreshFieldProfile(fn, lam0, aoi);
     }
     if (m_rtaNote) {
         m_rtaNote->setVisible(m_showA);

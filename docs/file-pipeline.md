@@ -80,7 +80,7 @@ end
 
 ```json
 {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "domain": "optical",
   "linkedOfd": "patch.ofd",
 

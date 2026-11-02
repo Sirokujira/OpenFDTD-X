@@ -62,6 +62,14 @@ private:
     // 呼び出し時にバッファをコピーで捕捉した純関数であること。
     void runHeavy(const std::function<audioedit::AudioBuffer()> &op,
                   const QString &doneStatus);
+    // 失敗し得る処理用。op が error に理由を書いたらバッファを差し替えず
+    // failStatus(理由) の文言を表示する (失敗を成功と偽らない)。文言を
+    // 失敗時に組み立てるのは、事前に %N を埋めておくとファイル名などに
+    // 含まれる "%1" が後の置換に巻き込まれるため
+    void runHeavy(
+        const std::function<audioedit::AudioBuffer(std::string *)> &op,
+        const QString &doneStatus,
+        const std::function<QString(const QString &)> &failStatus);
     void loadWav();
     void exportWav();
     void playViaSystemPlayer();

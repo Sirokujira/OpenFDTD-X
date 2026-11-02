@@ -222,6 +222,13 @@ const bool s_i18n = [] {
         "they differ.");
     I18n::reg("ae_st_concat", "クロスフェード連結: %1",
               "Crossfaded append: %1");
+    I18n::reg("ae_st_concat_fail",
+              "連結しませんでした: %1 のサンプルレートを現在の波形に合わせて"
+              "変換できません (%2)。先に別のツールで一般的な fs (44100 / "
+              "48000 Hz 等) へ変換してください",
+              "Not appended: the sample rate of %1 cannot be converted to "
+              "match the current waveform (%2). Convert it to a common rate "
+              "(44100 / 48000 Hz etc.) with another tool first");
 
     // サンプルレート変換
     I18n::reg("ae_sec_src", "サンプルレート変換 / Sample-rate conversion",
@@ -710,14 +717,20 @@ AudioEditorTab::AudioEditorTab(Project *project, QWidget *parent)
                               .arg(QString::fromStdString(res.message())));
                 return;
             }
-            // fs 不一致時のリサンプルは秒単位になり得る — 非同期で実行
+            // fs 不一致時のリサンプルは秒単位になり得る — 非同期で実行。
+            // 変換できない fs 比なら連結せず理由を出す (黙って音程・速度の
+            // ずれた結合をしない)
             const audioedit::AudioBuffer bufA = m_buf;
             const audioedit::AudioBuffer bufB = res.value();
             const double ov = xfOv->value();
-            runHeavy([bufA, bufB, ov] {
-                         return crossfadeConcat(bufA, bufB, ov);
+            const QString name = QFileInfo(path).fileName();
+            runHeavy([bufA, bufB, ov](std::string *err) {
+                         return crossfadeConcat(bufA, bufB, ov, err);
                      },
-                     I18n::tr("ae_st_concat").arg(QFileInfo(path).fileName()));
+                     I18n::tr("ae_st_concat").arg(name),
+                     [name](const QString &why) {
+                         return I18n::tr("ae_st_concat_fail").arg(name, why);
+                     });
         });
         connect(srcCombo, &QComboBox::currentIndexChanged, this,
                 [srcCombo, srcSpin](int) {
@@ -1356,15 +1369,34 @@ void AudioEditorTab::runHeavy(
     const std::function<audioedit::AudioBuffer()> &op,
     const QString &doneStatus)
 {
+    // 失敗しない処理なので失敗時の文言は使われない
+    runHeavy([op](std::string *) { return op(); }, doneStatus,
+             [](const QString &why) { return why; });
+}
+
+void AudioEditorTab::runHeavy(
+    const std::function<audioedit::AudioBuffer(std::string *)> &op,
+    const QString &doneStatus,
+    const std::function<QString(const QString &)> &failStatus)
+{
     if (m_busy) return;
     m_busy = true;
     setStatus(I18n::tr("ae_status_processing"));
     updateInfo();
     auto result = std::make_shared<audioedit::AudioBuffer>();
-    QThread *th = QThread::create([op, result] { *result = op(); });
-    connect(th, &QThread::finished, this, [this, th, result, doneStatus] {
+    auto err = std::make_shared<std::string>();
+    QThread *th = QThread::create([op, result, err] {
+        *result = op(err.get());
+    });
+    connect(th, &QThread::finished, this,
+            [this, th, result, err, doneStatus, failStatus] {
         th->deleteLater();
         m_busy = false;
+        if (!err->empty()) {
+            setStatus(failStatus(QString::fromStdString(*err)));
+            updateInfo();
+            return;
+        }
         pushBuffer(std::move(*result), doneStatus);
     });
     th->start();

@@ -394,6 +394,130 @@ double itdgMs(const QVector<Reflection> &refl)
     return 0;
 }
 
+// ── 可変音響 ────────────────────────────────────────────────────────────────
+// 既定の 4 機構。面積は既定ホール (30×20×12 m, V = 12000 m³, S = 3800 m²) の
+// 代表値で、実ホールに合わせて画面で編集する前提。吸音率は次の慣用表から取る
+// (いずれも 125/250/500/1k/2k/4k Hz の 6 帯域):
+//   合板パネル 3/8 in. (9.5 mm)          0.28 0.22 0.17 0.09 0.10 0.11
+//   ベロア 18 oz/yd² (610 g/m²) 1/2 にひだ 0.14 0.35 0.55 0.72 0.70 0.65
+//   木床                                 0.15 0.11 0.10 0.07 0.06 0.07
+//   (Harris, "Handbook of Acoustical Measurements and Noise Control" 等に
+//   収録の標準的な吸音率表)
+//   舞台開口 (舞台装置による)            0.25 〜 0.75
+//   (Knudsen & Harris, "Acoustical Designing in Architecture" の開口の値。
+//   周波数別の値は無いので範囲の中央 0.50 を全帯域に置く — 不確かさが
+//   最も大きい入力であることを画面に明示する)
+namespace {
+VaMechanism vaMech(const char *key, int role, bool replaces, double area,
+                   bool has0, const double (&a0)[6],
+                   bool has1, const double (&a1)[6])
+{
+    VaMechanism m;
+    m.key = QString::fromLatin1(key);
+    m.role = role;
+    m.replaces = replaces;
+    m.area = area;
+    m.hasAlpha[0] = has0;
+    m.hasAlpha[1] = has1;
+    for (int i = 0; i < 6; ++i) {
+        m.alpha[0][i] = a0[i];
+        m.alpha[1][i] = a1[i];
+    }
+    return m;
+}
+const double kPlywood[6] = { 0.28, 0.22, 0.17, 0.09, 0.10, 0.11 };
+const double kVelour[6]  = { 0.14, 0.35, 0.55, 0.72, 0.70, 0.65 };
+const double kWoodFloor[6] = { 0.15, 0.11, 0.10, 0.07, 0.06, 0.07 };
+const double kOpening[6] = { 0.50, 0.50, 0.50, 0.50, 0.50, 0.50 };
+const double kNone[6]    = { 0, 0, 0, 0, 0, 0 };
+} // namespace
+
+QVector<VaMechanism> defaultVaMechanisms()
+{
+    QVector<VaMechanism> m;
+    // 音響反射板: 状態 0 = 設置 (舞台開口を合板の反射面が塞ぐ) /
+    // 状態 1 = 収納 (開口の奥は舞台装置のある舞台空間)。舞台開口 14×10 m。
+    // 向きは x (舞台/後壁) — Fitzroy の方向割当
+    m << vaMech("rah_va_shell", AbsorptionRow::RearWall, false, 140.0,
+                true, kPlywood, true, kOpening);
+    // 吸音バナー: 状態 0 = 展開 (側壁 150 m² をベロアが覆う) /
+    // 状態 1 = 巻取 (側壁はバジェットのまま)
+    m << vaMech("rah_va_banner", AbsorptionRow::SideWall, true, 150.0,
+                true, kVelour, false, kNone);
+    // 床迫り・ピット蓋: 状態 0 = コンサート (蓋を上げて舞台床) /
+    // 状態 1 = オペラ (ピット開口 14×3.5 m が開く)。向きは z (床)
+    m << vaMech("rah_va_pitlid", AbsorptionRow::Floor, false, 49.0,
+                true, kWoodFloor, true, kOpening);
+    // 電子残響: 能動系 (状態 0 = 切 / 1 = 入) — 受動計算に含めない
+    VaMechanism e = vaMech("rah_va_electronic", AbsorptionRow::Other, false,
+                           0.0, false, kNone, false, kNone);
+    e.active = true;
+    m << e;
+    return m;
+}
+
+QVector<int> vaPresetStates(int preset)
+{
+    // 列 = 反射板 (0 設置/1 収納) / バナー (0 展開/1 巻取) /
+    //      ピット蓋 (0 コンサート/1 オペラ) / 電子残響 (0 切/1 入)
+    switch (preset) {
+        case 0:  return { 0, 1, 0, 0 };   // コンサート: 反射板で響きを返す
+        case 1:  return { 1, 1, 1, 0 };   // オペラ: 舞台装置 + ピット開放
+        case 2:  return { 1, 0, 0, 0 };   // 講演: バナーで残響を抑える
+        default: return { 1, 0, 0, 0 };   // ポピュラー: 同上 (差は拡声系)
+    }
+}
+
+int applyVariableAcoustics(AcousticOpts &a, const QVector<VaMechanism> &mech,
+                           const QVector<int> &states, double *haveArea)
+{
+    for (int i = 0; i < mech.size(); ++i) {
+        const VaMechanism &m = mech[i];
+        if (!m.enabled || m.active || !(m.area > 0)) continue;
+        const int st = qBound(0, i < states.size() ? states[i] : 0, 1);
+        if (!m.hasAlpha[st]) continue;   // この状態ではバジェットのまま
+
+        if (m.replaces) {
+            // 同じ role の有効な行の面積から area を差し引く。複数行あれば
+            // 面積比で按分し、総面積は変えない (覆った分を足し戻すので)
+            double have = 0;
+            for (const AbsorptionRow &r : a.absorption)
+                if (r.enabled && r.role == m.role) have += r.area;
+            if (have < m.area) {
+                if (haveArea) *haveArea = have;
+                return i;
+            }
+            const double keep = (have - m.area) / have;
+            for (AbsorptionRow &r : a.absorption)
+                if (r.enabled && r.role == m.role) r.area *= keep;
+        }
+        AbsorptionRow row;
+        row.role = m.role;
+        row.name = m.key;
+        row.area = m.area;
+        for (int b = 0; b < 6; ++b) row.alpha[b] = m.alpha[st][b];
+        a.absorption.push_back(row);
+    }
+    return -1;
+}
+
+VaCase variableAcousticsCase(const AcousticOpts &a,
+                             const QVector<VaMechanism> &mech,
+                             const QVector<int> &states, int formula)
+{
+    VaCase c;
+    AcousticOpts x = a;
+    c.failedMech = applyVariableAcoustics(x, mech, states, &c.haveArea);
+    if (c.failedMech >= 0) return c;
+    for (const AbsorptionRow &r : x.absorption)
+        if (r.enabled && r.role != AbsorptionRow::Air) c.listedArea += r.area;
+    c.overSurface = c.listedArea > x.surface;
+    for (int b = 0; b < 6; ++b) c.rt[b] = rt60(x, b, formula);
+    c.rtMid = 0.5 * (c.rt[2] + c.rt[3]);
+    c.ok = true;
+    return c;
+}
+
 // ── NC 曲線 (Beranek) ───────────────────────────────────────────────────────
 // 帯域: 63,125,250,500,1k,2k,4k Hz (8k は省略 — 入力7帯域に合わせる)
 static const int kNcSteps[] = { 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70 };

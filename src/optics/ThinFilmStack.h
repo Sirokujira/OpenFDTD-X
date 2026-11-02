@@ -95,6 +95,41 @@ std::vector<AnglePoint> angleSweep(const StackAtLambda &stack, double lambda_nm,
                                    double aoiMin_deg, double aoiMax_deg,
                                    int points);
 
+// ── 層内の電界分布 (s 偏波) ──────────────────────────────────────────────────
+// 特性行列を層の途中の厚さで打ち切ると、その位置の接線方向の E と H が出る
+// (Macleod [1] §2.2 — 行列は均質な媒質内の任意の 2 面を結ぶ)。s 偏波では
+// 電界は界面に平行なので接線成分がそのまま全電界になる。p 偏波は法線成分を
+// 別に組み立てる必要があるので扱わない (垂直入射では s と p は同じ)。
+//
+// 値は入射波の接線電界 E0+ で割った |E/E0+|² (無次元)。z は膜の表面を 0 とし
+// 基板へ向かって正。入射媒質側 (z < 0) は入射波と反射波の定在波、基板側は
+// 透過波だけ (裏面反射は含まない — filmResponse と同じ前提)。
+struct FieldPoint {
+    double z_nm = 0;
+    int    region = 0;   // −1 = 入射媒質, 0..N−1 = 層, N = 基板
+    double e2 = 0;       // |E/E0+|²
+};
+
+struct FieldProfile {
+    bool valid = false;
+    std::vector<FieldPoint> pts;          // z 昇順。界面の点は両側に 1 つずつ入る
+    std::vector<double> boundary_nm;      // 界面の z (N+1 個、先頭が 0)
+    // 層ごとの吸収率 (入射電力に対する割合)。|E|² の分布を体積で積分した
+    // A_j = (2π/λ)·2·n_j·k_j·∫|E/E0+|²dz / (n0·cosθ0) — 分布そのものから
+    // 求めるので、合計が filmResponse の A = 1 − R − T と一致することが
+    // 分布の検算になる (selftest)。積分は Simpson 則。
+    std::vector<double> layerA;
+    double R = 0, T = 0, A = 0;           // filmResponse (s 偏波) と同じ値
+};
+
+// pointsPerWave は層内の 1 波長 (|q|·d/λ) あたりの標本数の目安 (最低 16 点 / 層)。
+// front_nm / back_nm は入射媒質側・基板側に描く長さ。入力が filmResponse で
+// valid = false になる条件では valid = false を返す。
+FieldProfile fieldProfileS(double n0, const std::vector<FilmLayer> &layers,
+                           double nsub, double ksub, double lambda_nm,
+                           double aoi_deg, int pointsPerWave = 64,
+                           double front_nm = 0, double back_nm = 0);
+
 // ── 設計評価 ────────────────────────────────────────────────────────────────
 enum class Quantity { R, T };
 enum class PolMode  { S, P, Average };   // Average = (s + p)/2 (無偏光)

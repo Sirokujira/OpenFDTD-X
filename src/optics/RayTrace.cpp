@@ -151,6 +151,10 @@ RayResult traceRay(const System &sys, double epd, double field_deg,
         p.y = target.y - d.y * back;
         p.z = zStart;
     }
+    // 入射波面からの光路長の補正 (無限遠物体のみ — 平面波の波面は方向 d に
+    // 垂直な原点を通る面。始点 p からその面までは −(p·d) 進む)
+    const double oplStart = (sys.objectDistance > 0.0)
+        ? 0.0 : sys.nObject * dot(p, d);
 
     double nBefore = sys.nObject;
     double opl = 0.0;
@@ -227,6 +231,11 @@ RayResult traceRay(const System &sys, double epd, double field_deg,
     r.y = p.y;
     r.opl = opl;
     r.maxIncidenceDeg = maxInc;
+    r.L = d.x;
+    r.M = d.y;
+    r.N = d.z;
+    r.nImage = nBefore;
+    r.oplWave = opl + oplStart;
     return r;
 }
 

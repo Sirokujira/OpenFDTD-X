@@ -141,6 +141,61 @@ QVector<Reflection> echogram(const AcousticOpts &a,
                              const double src[3], const double rcv[3]);
 double itdgMs(const QVector<Reflection> &refl);   // 初期時間遅れ間隙
 
+// ── 可変音響 (反射板・吸音バナー・ピット蓋・電子残響) ──────────────────────
+// 機構の状態を吸音バジェットの変化として扱い、rt60 で帯域別 RT を求める。
+// 機構は 2 状態を持ち、状態ごとに「機構の面 (面積 area) の吸音率」を与える。
+//   replaces = false … 開口など、吸音バジェットの行には載っていないが総表面積
+//                      S には含まれている面。状態の α で行を 1 つ足す
+//                      (S は変えない — Eyring の ᾱ = A/S が一貫する)
+//   replaces = true  … 既存の面 (role が同じ行) を覆う機構。その role の行の
+//                      面積から area を差し引き、同じ面積の行を足す
+//                      (覆わない状態 = hasAlpha が false = バジェットのまま)
+//   active   = true  … 電子残響など能動系。受動の吸音モデルでは表せないので
+//                      計算に含めない (状態を変えても RT は変わらない)
+// role は足す行の向き (AbsorptionRow::Role の値 — Fitzroy の方向割当に使う)。
+struct VaMechanism {
+    QString key;              // I18n キー (表示名)
+    bool    enabled = true;   // false = そのホールに無い機構 (何も変えない)
+    bool    active = false;
+    bool    replaces = false;
+    int     role = 6;         // AbsorptionRow::Other
+    double  area = 0;         // [m²]
+    bool    hasAlpha[2] = { true, true };
+    double  alpha[2][6] = { { 0, 0, 0, 0, 0, 0 }, { 0, 0, 0, 0, 0, 0 } };
+};
+
+// 既定の 4 機構 (表の行順: 反射板 / 吸音バナー / ピット蓋 / 電子残響)。
+// 吸音率と面積の出所は RoomAcoustics.cpp のコメントを参照。
+QVector<VaMechanism> defaultVaMechanisms();
+
+// 用途別の構成 (コンサート / オペラ / 講演 / ポピュラー) における各機構の
+// 状態 (0/1)。preset は 0..3、戻り値の長さは defaultVaMechanisms() と同じ。
+QVector<int> vaPresetStates(int preset);
+
+// mech[i] を状態 states[i] にした吸音バジェットを a に適用する。
+// 戻り値は覆う面の面積が足りなかった replaces 機構の添字 (-1 = 成功)。
+// 失敗時は a を途中まで書き換えている — 呼び出し側はコピーに対して呼ぶこと。
+// haveArea には失敗した機構が覆おうとした role の有効な面積合計 [m²] を返す。
+int applyVariableAcoustics(AcousticOpts &a, const QVector<VaMechanism> &mech,
+                           const QVector<int> &states, double *haveArea = nullptr);
+
+struct VaCase {
+    bool   ok = false;
+    int    failedMech = -1;   // ok == false: 面積が足りなかった機構の添字
+    double haveArea = 0;      //   その role の有効な面積合計 [m²]
+    // 計算はしたが注意が要ること: 載っている面積の合計が総表面積 S を超えた
+    // (Eyring の ᾱ = A/S は 0.999 で頭打ちになる)
+    bool   overSurface = false;
+    double listedArea = 0;    // Air 以外の有効な行の面積合計 [m²]
+    double rt[6] = { 0, 0, 0, 0, 0, 0 };   // 帯域別 RT60 [s]
+    double rtMid = 0;         // T_mid = (T500 + T1k)/2 [s]
+};
+// 状態を適用した室の RT (formula は rt60 と同じ: 0 Sabine / 1 Eyring /
+// 2 Fitzroy)。元の a は変更しない。
+VaCase variableAcousticsCase(const AcousticOpts &a,
+                             const QVector<VaMechanism> &mech,
+                             const QVector<int> &states, int formula);
+
 // ── NC 評価 ────────────────────────────────────────────────────────────
 // levels: 63,125,250,500,1k,2k,4k Hz のオクターブ帯域騒音レベル [dB]。
 // 戻り値: NC 値 (タンジェント法, 15..70 に丸め、範囲外は端値)。

@@ -12,9 +12,12 @@
 #include "../widgets/SectionBox.h"
 #include "../I18n.h"
 #include "../acoustics/core/RoomModes.h"
+#include "../acoustics/core/StatisticalRir.h"
+#include "../acoustics/io/WavWriter.h"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileDialog>
@@ -31,9 +34,11 @@
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextStream>
+#include <QThread>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 using namespace ofd;
 using namespace ofd::roomac;
@@ -273,9 +278,65 @@ const bool s_i18n = [] {
               "Hall).");
     I18n::reg("rah_col_mech", "機構", "Mechanism");
     I18n::reg("rah_col_state", "状態", "State");
-    I18n::reg("rah_col_rtchange", "RT変化", "ΔRT");
-    I18n::reg("rah_va_now", "現在の構成: RT = %1 + 0.35 = %2 s (コンサート形式)",
-              "Current config: RT = %1 + 0.35 = %2 s (concert)");
+    I18n::reg("rah_col_rtchange", "ΔT_mid (1番目 − 2番目)",
+              "ΔT_mid (1st − 2nd state)");
+    I18n::reg("rah_col_va_area", "面積", "Area");
+    I18n::reg("rah_va_now",
+              "表の状態での T_mid = %1 s (%2、吸音バジェットから計算)",
+              "T_mid in the table's states = %1 s (%2, from the absorption "
+              "budget)");
+    I18n::reg("rah_va_model_hint",
+              "各機構の状態を吸音バジェットの変化として計算します。反射板の"
+              "合板・吸音バナーのベロア・舞台床は標準的な吸音率表の値、舞台"
+              "開口とピット開口は慣用値 0.25〜0.75 の中央 0.50 です (最も不確かな"
+              "入力)。開口の面は総表面積 S には含まれるが吸音バジェットの表には"
+              "無い面 (吸音率≈0 として扱われていた面) に置くので、機構を入れると"
+              "表だけの値より RT が短く出ることがあります。吸音バナーは側壁の"
+              "面積を置き換えます。電子残響は能動系のため計算に含めません。"
+              "面積は既定ホール (30×20×12 m) の代表値なので実ホールに合わせて"
+              "編集してください。",
+              "Each mechanism's state is computed as a change of the absorption "
+              "budget. The shell's plywood, the banners' velour and the stage "
+              "floor use standard absorption tables; the stage and pit openings "
+              "use 0.50, the middle of the customary 0.25-0.75 (the least "
+              "certain input). Openings are placed on surface that is part of "
+              "the total area S but not listed in the budget (treated as α≈0), "
+              "so adding mechanisms can make RT shorter than the budget alone. "
+              "Banners replace side-wall area. Electronic reverberation is an "
+              "active system and is not included. Areas are typical of the "
+              "default hall (30×20×12 m) — edit them to match the real hall.");
+    I18n::reg("rah_va_active_na", "能動系 — 計算対象外",
+              "Active system — not computed");
+    I18n::reg("rah_va_err_area",
+              "%1 が覆う %2 m² に対し、同じ向きの面が %3 m² しかありません "
+              "(吸音バジェットの面積を確認してください)",
+              "%1 covers %2 m² but only %3 m² of that surface exists "
+              "(check the absorption budget)");
+    I18n::reg("rah_va_warn_surface",
+              "注意: 吸音バジェットと機構の面積の合計 %1 m² が総表面積 "
+              "S = %2 m² を超えています",
+              "Note: budget + mechanism area %1 m² exceeds the total "
+              "surface S = %2 m²");
+    I18n::reg("rah_va_csv", "CSV 保存", "Save CSV");
+    I18n::reg("rah_va_col_case", "構成", "Configuration");
+    I18n::reg("rah_va_col_states", "機構の状態", "Mechanism states");
+    I18n::reg("rah_va_case_concert", "コンサート", "Concert");
+    I18n::reg("rah_va_case_opera", "オペラ", "Opera");
+    I18n::reg("rah_va_case_speech", "講演", "Speech");
+    I18n::reg("rah_va_case_popular", "ポピュラー", "Popular");
+    I18n::reg("rah_va_result_note",
+              "%1 で計算 (RT60 [s]、T_mid = 500 Hz と 1 kHz の平均)。"
+              "講演とポピュラーは受動構成が同じなので同じ値になります (違いは"
+              "拡声系)。電子残響は含めていません。",
+              "Computed with %1 (RT60 [s], T_mid = mean of 500 Hz and "
+              "1 kHz). Speech and popular share the same passive "
+              "configuration, so their values are equal (the difference is "
+              "the sound system). Electronic reverberation is not included.");
+    I18n::reg("rah_va_stale",
+              "入力 (機構・吸音バジェット) が変わったため、一括解析の結果を"
+              "消しました。もう一度実行してください。",
+              "The inputs (mechanisms or absorption budget) changed, so the "
+              "batch result was cleared. Run it again.");
     I18n::reg("rah_va_batch", "▶ 各構成で一括解析 (4ケース)",
               "▶ Batch-run all configs (4 cases)");
     I18n::reg("rah_va_batch_hint",
@@ -521,6 +582,46 @@ const bool s_i18n = [] {
     I18n::reg("rah_notch_obl", "斜め", "oblique");
     // 出力 (追加ボタン)
     I18n::reg("rah_export_aural", "🎧 各席の可聴化", "🎧 Per-seat auralization");
+    I18n::reg("rah_aural_pick_dry", "可聴化するドライ (無響) WAV",
+              "Dry (anechoic) WAV to auralize");
+    I18n::reg("rah_aural_pick_dir", "各席の RIR と可聴化 WAV の出力先",
+              "Output folder for the per-seat RIRs and auralized WAVs");
+    I18n::reg("rah_aural_running", "可聴化中… (%1 席)", "Auralizing… (%1 seats)");
+    I18n::reg("rah_aural_seat",
+              "%1: r = %2 m、拡散音の始まり %3 ms、1 kHz の拡散音/直接音 %4 dB、"
+              "出力ピーク %5 dBFS%6",
+              "%1: r = %2 m, diffuse onset %3 ms, 1 kHz diffuse/direct %4 dB, "
+              "output peak %5 dBFS%6");
+    I18n::reg("rah_aural_clip", " — クリップ %1 サンプル", " — %1 samples clipped");
+    I18n::reg("rah_aural_resampled", " — RIR を %1 Hz へ変換",
+              " — RIR resampled to %1 Hz");
+    I18n::reg("rah_aural_seat_fail", "%1: 失敗 — %2", "%1: failed — %2");
+    I18n::reg("rah_aural_note",
+              "▸ 統計モデルの RIR です (波動計算・音線追跡ではありません): "
+              "直接音 (振幅 1/r、到達 r/c) + 1 次鏡像法の反射 (エコーグラムと同じ) + "
+              "帯域別 (125 Hz〜4 kHz) の指数減衰する拡散音。拡散音は最初の反射 (ITDG) から"
+              "始まり、大きさと減衰は Barron の修正理論の反射音エネルギーと現在の式の "
+              "T(f) に従います (1 次反射は別に足すので、初期のエネルギーは Barron より"
+              "その分だけ大きくなります)。6 帯域の外の拡散音・2 次以上の反射の時間構造・両耳/指向性は含みません。"
+              "席の間で相対レベルを保つため正規化はしていません (絶対音圧ではありません)。"
+              "出力先に rir_P1〜P4.wav と <ドライ名>_P1〜P4.wav を書きます — 可聴化タブの"
+              "「フォルダから自動割当」は受音点名 P1〜P4 の行へ RIR を割り当てます。",
+              "▸ A statistical-model RIR (not a wave or ray simulation): direct sound "
+              "(amplitude 1/r, arriving at r/c) + first-order image reflections (the "
+              "same as the echogram) + an exponentially decaying diffuse part per "
+              "band (125 Hz–4 kHz). The diffuse part starts at the first "
+              "reflection (ITDG) and follows Barron's revised-theory reflected "
+              "energy and T(f) from the current formula (the first-order "
+              "reflections are added on top, so the early energy exceeds Barron's "
+              "by that amount). Diffuse sound outside the six bands, "
+              "the time structure of higher-order reflections, and binaural/"
+              "directivity are not included. Nothing is normalized so the seats keep "
+              "their relative levels (this is not an absolute sound pressure). "
+              "rir_P1–P4.wav and <dry name>_P1–P4.wav are written to the output "
+              "folder — the auralization tab's \"assign from folder\" maps the RIRs "
+              "to receivers named P1–P4.");
+    I18n::reg("rah_aural_internal", "可聴化が内部エラーで止まりました: %1",
+              "Auralization stopped with an internal error: %1");
     I18n::reg("rah_export_ease", "📐 ODEON/EASE 形式エクスポート",
               "📐 Export ODEON/EASE format");
     // ── 表データ / 行ラベル (mock の静的テーブル) ──────────────────────────
@@ -1283,15 +1384,19 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     auto *pngBtn = new QPushButton(I18n::tr("ra_export_png"), sExp);
     row->addWidget(repBtn);
     row->addWidget(pngBtn);
-    // 可聴化 / ODEON・EASE エクスポートは未配線 (絶対規則 5)
+    // 可聴化は統計モデルの RIR で実計算。ODEON・EASE エクスポートは未配線 (絶対規則 5)
     auto *auralBtn = new QPushButton(I18n::tr("rah_export_aural"), sExp);
     auto *easeBtn  = new QPushButton(I18n::tr("rah_export_ease"), sExp);
-    tabhelp::markNotImplemented(auralBtn, I18n::tr(tabhelp::notimpl::kEngine));
+    m_auralBtn = auralBtn;
     tabhelp::markNotImplemented(easeBtn, I18n::tr(tabhelp::notimpl::kFormat));
     row->addWidget(auralBtn);
     row->addWidget(easeBtn);
     row->addStretch(1);
     sExp->vbox()->addLayout(row);
+    m_auralStatus = new QLabel(sExp);
+    m_auralStatus->setWordWrap(true);
+    m_auralStatus->setVisible(false);
+    sExp->vbox()->addWidget(m_auralStatus);
     v->addWidget(sExp);
 
     v->addStretch(1);
@@ -1300,6 +1405,7 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
     setFrameShape(QFrame::NoFrame);
 
     connect(repBtn, &QPushButton::clicked, this, &RoomAcousticsTab::exportReport);
+    connect(auralBtn, &QPushButton::clicked, this, &RoomAcousticsTab::runSeatAuralization);
     connect(pngBtn, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getSaveFileName(
             this, I18n::tr("ra_export_png"), "coverage.png", "PNG (*.png)");
@@ -1308,6 +1414,162 @@ RoomAcousticsTab::RoomAcousticsTab(Project *project, QWidget *parent)
 
     connect(project, &Project::loaded, this, &RoomAcousticsTab::refresh);
     refresh();
+}
+
+// ── 各席の可聴化 ────────────────────────────────────────────────────────────
+// 4 席それぞれに統計モデルの RIR (acoustics::synthesizeStatisticalRir) を作り、
+// ドライ WAV と畳み込んで書き出す。RIR の材料 (距離・1 次鏡像の反射・T(f)・
+// Barron の反射音エネルギー) はすべてこのタブの他の表示と同じ関数から取る。
+void RoomAcousticsTab::runSeatAuralization()
+{
+    if (m_auralBusy) return;
+    const QString dry = QFileDialog::getOpenFileName(
+        this, I18n::tr("rah_aural_pick_dry"), QString(), "WAV (*.wav)");
+    if (dry.isEmpty()) return;
+    const QString dir = QFileDialog::getExistingDirectory(
+        this, I18n::tr("rah_aural_pick_dir"), QFileInfo(dry).absolutePath());
+    if (dir.isEmpty()) return;
+    startSeatAuralization(dry, dir);
+}
+
+void RoomAcousticsTab::startSeatAuralization(const QString &dry, const QString &dir)
+{
+    if (m_auralBusy) return;
+    struct Seat {
+        QString id, label;
+        acoustics::StatisticalRirConfig cfg;
+        double r = 0, lateDb1k = 0, onsetMs = 0;
+        QString rirPath, wetPath;
+    };
+    const AcousticOpts &a = m_p->acoustic();
+    const double c = roomac::soundSpeed();
+    const double V = std::max(1.0, a.volume);
+    double src[3];
+    sourcePos(src);
+    QVector<Seat> seats;
+    for (int i = 0; i < 4; ++i) {
+        Seat st;
+        st.id = QStringLiteral("P%1").arg(i + 1);
+        st.label = I18n::tr(kReceivers[i].key);
+        double rcv[3];
+        receiverPos(i, rcv);
+        const double dx = rcv[0] - src[0], dy = rcv[1] - src[1], dz = rcv[2] - src[2];
+        st.r = std::max(1.0, std::sqrt(dx * dx + dy * dy + dz * dz));
+        acoustics::StatisticalRirConfig &cfg = st.cfg;
+        cfg.sampleRateHz = 48000.0;
+        cfg.directDelaySeconds = st.r / c;
+        cfg.directAmplitude = 1.0 / st.r;      // 1 m 基準 (席の間の相対レベル)
+        cfg.seed = unsigned(i + 1);
+        const QVector<roomac::Reflection> refl = roomac::echogram(a, src, rcv);
+        for (int k = 1; k < refl.size(); ++k)       // 先頭は直接音
+            cfg.reflections.push_back(acoustics::StatRirReflection(
+                refl[k].timeMs * 1e-3, std::pow(10.0, refl[k].levelDb / 20.0)));
+        // 拡散音は最初の反射 (ITDG) から始める — それより前は直接音だけ、が
+        // ITDG の定義。1 次反射を拡散音から差し引くと、前方の席では 1 次反射
+        // だけで Barron の反射音を超える帯域が出て残響が消える (実測で 4 kHz の
+        // T30 が 0.34 s になった) ので差し引かない
+        const double onset = std::max(0.0, roomac::itdgMs(refl) * 1e-3);
+        cfg.diffuseOnsetSeconds = onset;
+        st.onsetMs = onset * 1e3;
+        // Barron の修正理論: 直接音 d = 100/r²、反射音 (31200T/V)·e^{−0.04r/T}
+        // (音の放射時刻から e^{−13.82 t/T} で減衰)。始まり以降のぶんは
+        // さらに e^{−13.82·onset/T}
+        const double d = 100.0 / (st.r * st.r);
+        for (int b = 0; b < acoustics::kStatRirBands; ++b) {
+            const double T = std::max(0.05, roomac::rt60(a, b));
+            const double rev = (31200.0 * T / V) * std::exp(-0.04 * st.r / T);
+            cfg.rt60[b] = T;
+            cfg.lateToDirect[b] = rev / d * std::exp(-13.8155 * onset / T);
+        }
+        st.lateDb1k = (cfg.lateToDirect[3] > 0.0)
+                          ? 10.0 * std::log10(cfg.lateToDirect[3]) : -999.0;
+        const QString base = QFileInfo(dry).completeBaseName();
+        st.rirPath = QDir(dir).filePath(QStringLiteral("rir_%1.wav").arg(st.id));
+        st.wetPath = QDir(dir).filePath(QStringLiteral("%1_%2.wav").arg(base, st.id));
+        seats << st;
+    }
+
+    struct Out {
+        bool ok = false;
+        QString error;
+        double peakDbfs = 0;
+        long long clipped = 0;
+        double resampledTo = 0;
+    };
+    auto outs = std::make_shared<QVector<Out>>(seats.size());
+    auto fault = std::make_shared<std::string>();
+    m_auralBusy = true;
+    m_auralBtn->setEnabled(false);
+    m_auralStatus->setVisible(true);
+    m_auralStatus->setText(I18n::tr("rah_aural_running").arg(seats.size()));
+    // 入力 (席ごとの設定とパス) は値で捕捉する — gui.md の非同期の流儀
+    QThread *th = QThread::create([seats, dry, outs, fault] {
+        try {
+            for (int i = 0; i < seats.size(); ++i) {
+                Out &o = (*outs)[i];
+                const acoustics::AcousticResult<acoustics::AudioBuffer> rir =
+                    acoustics::synthesizeStatisticalRir(seats[i].cfg);
+                if (!rir.success()) {
+                    o.error = QString::fromStdString(rir.message());
+                    continue;
+                }
+                const acoustics::AcousticResult<bool> wr = acoustics::writeWavFile(
+                    std::string(QFile::encodeName(seats[i].rirPath).constData()),
+                    rir.value(), acoustics::WavSampleFormat::Float32);
+                if (!wr.success()) {
+                    o.error = QString::fromStdString(wr.message());
+                    continue;
+                }
+                QtAcousticAdapter::RirResampleNote note;
+                const acoustics::AcousticResult<acoustics::ConvolutionInfo> cv =
+                    QtAcousticAdapter::convolveFiles(dry, seats[i].rirPath,
+                                                     seats[i].wetPath, 0, nullptr,
+                                                     nullptr, nullptr, &note);
+                if (!cv.success()) {
+                    o.error = QString::fromStdString(cv.message());
+                    continue;
+                }
+                o.ok = true;
+                o.peakDbfs = cv.value().outputPeakDbfs;
+                o.clipped = (long long)cv.value().clippedSampleCount;
+                if (note.resampled) o.resampledTo = note.toHz;
+            }
+        } catch (const std::exception &e) {
+            *fault = e.what();
+        } catch (...) {
+            *fault = "unknown exception";
+        }
+    });
+    connect(th, &QThread::finished, th, &QObject::deleteLater);
+    connect(th, &QThread::finished, this, [this, seats, outs, fault] {
+        m_auralBusy = false;
+        m_auralBtn->setEnabled(true);
+        QStringList lines;
+        if (!fault->empty())
+            lines << I18n::tr("rah_aural_internal").arg(QString::fromStdString(*fault));
+        for (int i = 0; i < seats.size(); ++i) {
+            const Seat &st = seats[i];
+            const Out &o = (*outs)[i];
+            if (!o.ok) {
+                lines << I18n::tr("rah_aural_seat_fail").arg(st.label, o.error);
+                continue;
+            }
+            QString extra;
+            if (o.clipped > 0) extra += I18n::tr("rah_aural_clip").arg(o.clipped);
+            if (o.resampledTo > 0)
+                extra += I18n::tr("rah_aural_resampled").arg(o.resampledTo, 0, 'f', 0);
+            lines << I18n::tr("rah_aural_seat")
+                         .arg(st.label, QString::number(st.r, 'f', 1),
+                              QString::number(st.onsetMs, 'f', 1),
+                              st.lateDb1k > -900 ? QString::number(st.lateDb1k, 'f', 1)
+                                                 : QString::fromUtf8("—"),
+                              QString::number(o.peakDbfs, 'f', 1), extra);
+        }
+        lines << I18n::tr("rah_aural_note");
+        m_auralStatus->setText(lines.join(QStringLiteral("\n")));
+        emit auralizationFinished();
+    });
+    th->start();
 }
 
 void RoomAcousticsTab::sourcePos(double out[3]) const
@@ -1879,6 +2141,14 @@ QWidget *RoomAcousticsTab::buildSpatialPage()
 }
 
 // ステージ支援 ST + 可変音響 (可動反射板/バナー/電子残響) + カップルドボリューム。
+// 可変音響の状態の表示名 (roomac::defaultVaMechanisms() の行順・状態順)
+static const char *const kVaStates[4][2] = {
+    { "rah_va_deployed", "rah_va_stored" },   // 反射板
+    { "rah_va_unrolled", "rah_va_rolled" },   // 吸音バナー
+    { "rah_va_concert",  "rah_va_opera" },    // 床迫り・ピット蓋
+    { "rah_off",         "rah_on" },          // 電子残響
+};
+
 QWidget *RoomAcousticsTab::buildStagePage()
 {
     auto *page = new QWidget;
@@ -1913,42 +2183,71 @@ QWidget *RoomAcousticsTab::buildStagePage()
     s->vbox()->addWidget(makeCheck(I18n::tr("rah_st_matrix"), false, s));
     v->addWidget(s);
 
-    // ── 可変音響
+    // ── 可変音響 (機構の状態 → 吸音バジェット → rt60。roomac の VaMechanism)
     auto *sv = new SectionBox(I18n::tr("rah_va_section"), page);
     sv->vbox()->addWidget(makeHint(I18n::tr("rah_va_hint"), sv));
-    auto *va = makeStaticTable(sv,
+    sv->vbox()->addWidget(makeHint(I18n::tr("rah_va_model_hint"), sv));
+    const QVector<roomac::VaMechanism> vaDef = roomac::defaultVaMechanisms();
+    m_vaTable = makeStaticTable(sv,
         { "", I18n::tr("rah_col_mech"), I18n::tr("rah_col_state"),
-          I18n::tr("rah_col_rtchange") }, 4);
-    static const struct { const char *mech, *s0, *s1, *drt; bool on; int sel; }
-    kVa[4] = {
-        { "rah_va_shell",      "rah_va_deployed", "rah_va_stored",
-          "+0.35 s",      true,  0 },
-        { "rah_va_banner",     "rah_va_unrolled", "rah_va_rolled",
-          "-0.3 s",       false, 1 },
-        { "rah_va_pitlid",     "rah_va_concert",  "rah_va_opera",
-          "±0.1 s",       false, 0 },
-        { "rah_va_electronic", "rah_off",         "rah_on",
-          "+0.2〜1.5 s",  false, 0 },
-    };
-    for (int r = 0; r < 4; ++r) {
-        va->setItem(r, 0, checkItem(kVa[r].on));
-        va->setItem(r, 1, new QTableWidgetItem(I18n::tr(kVa[r].mech)));
-        auto *seg = new QComboBox(va);
-        seg->addItems({ I18n::tr(kVa[r].s0), I18n::tr(kVa[r].s1) });
-        seg->setCurrentIndex(kVa[r].sel);
-        va->setCellWidget(r, 2, seg);
-        va->setItem(r, 3, numItem(QString::fromUtf8(kVa[r].drt)));
+          I18n::tr("rah_col_va_area"), I18n::tr("rah_col_rtchange") },
+        vaDef.size());
+    // 状態の表示名は kVaStates (状態 0 / 状態 1)。初期状態はコンサート構成
+    const QVector<int> concert = roomac::vaPresetStates(0);
+    m_vaState.clear();
+    m_vaArea.clear();
+    for (int r = 0; r < vaDef.size(); ++r) {
+        const roomac::VaMechanism &mech = vaDef[r];
+        m_vaTable->setItem(r, 0, checkItem(true));
+        m_vaTable->setItem(r, 1, new QTableWidgetItem(I18n::tr(mech.key)));
+        auto *seg = new QComboBox(m_vaTable);
+        seg->addItems({ I18n::tr(kVaStates[r][0]), I18n::tr(kVaStates[r][1]) });
+        seg->setCurrentIndex(concert.value(r));
+        m_vaTable->setCellWidget(r, 2, seg);
+        m_vaState << seg;
+        auto *area = plainSpin(m_vaTable, 0, 5000, mech.area);
+        area->setSuffix(QString::fromUtf8(" m²"));
+        area->setEnabled(!mech.active);   // 能動系に面積は無い
+        m_vaTable->setCellWidget(r, 3, area);
+        m_vaArea << area;
+        m_vaTable->setItem(r, 4, numItem(QString()));
+        connect(seg, &QComboBox::currentIndexChanged, this,
+                [this](int) { refreshVariableAcoustics(); });
+        connect(area, &QDoubleSpinBox::valueChanged, this,
+                [this](double) { refreshVariableAcoustics(); });
     }
-    sv->vbox()->addWidget(va);
+    connect(m_vaTable, &QTableWidget::itemChanged, this,
+            [this](QTableWidgetItem *it) {
+        if (it && it->column() == 0) refreshVariableAcoustics();
+    });
+    sv->vbox()->addWidget(m_vaTable);
     m_stageRtBadge = makeBadge(QString(), kAcc, sv);
+    m_stageRtBadge->setWordWrap(true);
     sv->vbox()->addWidget(m_stageRtBadge);
     auto *batch = new QHBoxLayout();
     auto *batchBtn = new QPushButton(I18n::tr("rah_va_batch"), sv);
     batchBtn->setStyleSheet("font-weight:600;");
-    tabhelp::markNotImplemented(batchBtn, I18n::tr(tabhelp::notimpl::kEngine));   // 一括解析は未配線
     batch->addWidget(batchBtn);
     batch->addWidget(makeHint(I18n::tr("rah_va_batch_hint"), sv), 1);
+    m_vaCsvBtn = new QPushButton(I18n::tr("rah_va_csv"), sv);
+    m_vaCsvBtn->setEnabled(false);   // 一括解析の結果があるときだけ
+    batch->addWidget(m_vaCsvBtn);
     sv->vbox()->addLayout(batch);
+    QStringList resHead { I18n::tr("rah_va_col_case"),
+                          I18n::tr("rah_va_col_states") };
+    for (double f : roomac::kBandHz)
+        resHead << (f >= 1000 ? QString::number(f / 1000) + "k" : QString::number(f));
+    resHead << QStringLiteral("T_mid");
+    m_vaResult = makeStaticTable(sv, resHead, 4);
+    m_vaResult->setVisible(false);   // 押されるまで出さない (未実行の表を見せない)
+    sv->vbox()->addWidget(m_vaResult);
+    m_vaResultNote = makeHint(QString(), sv);
+    m_vaResultNote->setVisible(false);
+    sv->vbox()->addWidget(m_vaResultNote);
+    connect(batchBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::runVariableAcousticsBatch);
+    connect(m_vaCsvBtn, &QPushButton::clicked, this,
+            &RoomAcousticsTab::exportVariableAcousticsCsv);
     v->addWidget(sv);
 
     // ── カップルドボリューム
@@ -2742,10 +3041,194 @@ void RoomAcousticsTab::refreshHallDerived()
 
     // IR解析 / 空間印象は実計算 (refreshIrPage / refreshSpatialPage) 側で更新。
 
-    // ── ステージ: 反射板設置時の RT (mock の +0.35 s)
-    m_stageRtBadge->setText(I18n::tr("rah_va_now")
-        .arg(QString::number(H.RT, 'f', 2),
-             QString::number(H.RT + 0.35, 'f', 2)));
+    // ステージ/可変音響の RT は吸音バジェットからの実計算
+    // (refreshVariableAcoustics) 側で更新する。
+}
+
+// ── 可変音響 ────────────────────────────────────────────────────────────────
+// 表 (有無・状態・面積) は .ofdx に保存しない画面上の検討用の入力。計算は
+// roomac::variableAcousticsCase (吸音バジェットへ機構の面を適用して rt60)。
+QVector<roomac::VaMechanism> RoomAcousticsTab::vaMechanismsFromTable() const
+{
+    QVector<roomac::VaMechanism> m = roomac::defaultVaMechanisms();
+    for (int r = 0; r < m.size() && m_vaTable && r < m_vaTable->rowCount(); ++r) {
+        const QTableWidgetItem *en = m_vaTable->item(r, 0);
+        m[r].enabled = !en || en->checkState() == Qt::Checked;
+        if (r < m_vaArea.size()) m[r].area = m_vaArea[r]->value();
+    }
+    return m;
+}
+
+QVector<int> RoomAcousticsTab::vaStatesFromTable() const
+{
+    QVector<int> st;
+    for (QComboBox *c : m_vaState) st << c->currentIndex();
+    return st;
+}
+
+static QString vaFormulaName(int f)
+{
+    return f == 0 ? QStringLiteral("Sabine")
+         : f == 2 ? QStringLiteral("Fitzroy") : QStringLiteral("Eyring");
+}
+
+static QString vaErrorText(const roomac::VaCase &c,
+                           const QVector<roomac::VaMechanism> &m)
+{
+    const roomac::VaMechanism &x = m.value(c.failedMech);
+    return I18n::tr("rah_va_err_area")
+        .arg(I18n::tr(x.key), QString::number(x.area, 'f', 0),
+             QString::number(c.haveArea, 'f', 0));
+}
+
+void RoomAcousticsTab::refreshVariableAcoustics()
+{
+    if (!m_vaTable) return;
+    const AcousticOpts &a = m_p->acoustic();
+    const QVector<roomac::VaMechanism> mech = vaMechanismsFromTable();
+    const QVector<int> st = vaStatesFromTable();
+    const int f = qBound(0, a.rtFormula, 2);
+
+    const roomac::VaCase now = roomac::variableAcousticsCase(a, mech, st, f);
+    if (now.ok) {
+        QString t = I18n::tr("rah_va_now")
+            .arg(QString::number(now.rtMid, 'f', 2), vaFormulaName(f));
+        if (now.overSurface)
+            t += QStringLiteral("\n") + I18n::tr("rah_va_warn_surface")
+                .arg(QString::number(now.listedArea, 'f', 0),
+                     QString::number(a.surface, 'f', 0));
+        m_stageRtBadge->setText(t);
+        m_stageRtBadge->setStyleSheet(QStringLiteral("color:%1; font-weight:600;")
+            .arg(QLatin1String(now.overSurface ? kWarn : kAcc)));
+    } else {
+        m_stageRtBadge->setText(vaErrorText(now, mech));
+        m_stageRtBadge->setStyleSheet(QStringLiteral("color:%1; font-weight:600;")
+            .arg(QLatin1String(kErr)));
+    }
+
+    // 各機構の ΔT_mid = T_mid(1 番目の状態) − T_mid(2 番目の状態)
+    // (他の機構は表の状態のまま)
+    for (int r = 0; r < mech.size() && r < m_vaTable->rowCount(); ++r) {
+        QString cell = QString::fromUtf8("—");
+        if (mech[r].enabled && mech[r].active) {
+            cell = I18n::tr("rah_va_active_na");
+        } else if (mech[r].enabled) {
+            QVector<int> s0 = st, s1 = st;
+            s0[r] = 0;
+            s1[r] = 1;
+            const roomac::VaCase c0 = roomac::variableAcousticsCase(a, mech, s0, f);
+            const roomac::VaCase c1 = roomac::variableAcousticsCase(a, mech, s1, f);
+            if (c0.ok && c1.ok) {
+                const double d = c0.rtMid - c1.rtMid;
+                cell = (d >= 0 ? QStringLiteral("+") : QString())
+                       + QString::number(d, 'f', 2) + QStringLiteral(" s");
+            }
+        }
+        if (QTableWidgetItem *it = m_vaTable->item(r, 4)) it->setText(cell);
+    }
+
+    // 一括解析が読む入力 (吸音バジェット・式・機構の表) が変わったときだけ
+    // 結果を消す。Project::changed は他タブの編集でも飛ぶので、4 ケースを
+    // 計算し直して表示中の値と食い違うかで判定する (4 ケースなので安い)
+    if (m_vaHasResult && vaBatchKey() != m_vaResultKey) {
+        m_vaHasResult = false;
+        m_vaResult->setVisible(false);
+        m_vaCsvBtn->setEnabled(false);
+        m_vaResultNote->setText(I18n::tr("rah_va_stale"));
+        m_vaResultNote->setVisible(true);
+    }
+}
+
+QVector<double> RoomAcousticsTab::vaBatchKey() const
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const QVector<roomac::VaMechanism> mech = vaMechanismsFromTable();
+    const int f = qBound(0, a.rtFormula, 2);
+    QVector<double> key;
+    key << f;
+    for (int p = 0; p < 4; ++p) {
+        const roomac::VaCase c =
+            roomac::variableAcousticsCase(a, mech, roomac::vaPresetStates(p), f);
+        key << (c.ok ? 1 : 0) << c.failedMech << (c.overSurface ? 1 : 0);
+        for (double t : c.rt) key << t;
+    }
+    for (const roomac::VaMechanism &m : mech) key << (m.enabled ? 1 : 0);
+    return key;
+}
+
+void RoomAcousticsTab::runVariableAcousticsBatch()
+{
+    const AcousticOpts &a = m_p->acoustic();
+    const QVector<roomac::VaMechanism> mech = vaMechanismsFromTable();
+    const int f = qBound(0, a.rtFormula, 2);
+    static const char *const kCase[4] = {
+        "rah_va_case_concert", "rah_va_case_opera",
+        "rah_va_case_speech",  "rah_va_case_popular" };
+    QStringList problems;
+    for (int p = 0; p < 4; ++p) {
+        const QVector<int> st = roomac::vaPresetStates(p);
+        // 機構の状態の要約 (表で外した機構は出さない)
+        QStringList sum;
+        for (int r = 0; r < mech.size() && r < 4; ++r) {
+            if (!mech[r].enabled) continue;
+            sum << I18n::tr(mech[r].key) + QStringLiteral(": ")
+                       + I18n::tr(kVaStates[r][qBound(0, st.value(r), 1)]);
+        }
+        m_vaResult->setItem(p, 0, new QTableWidgetItem(I18n::tr(kCase[p])));
+        m_vaResult->setItem(p, 1, new QTableWidgetItem(sum.join(QStringLiteral(" / "))));
+        const roomac::VaCase c = roomac::variableAcousticsCase(a, mech, st, f);
+        for (int b = 0; b < 6; ++b)
+            m_vaResult->setItem(p, 2 + b, numItem(c.ok
+                ? QString::number(c.rt[b], 'f', 2) : QString::fromUtf8("—")));
+        m_vaResult->setItem(p, 8, numItem(c.ok
+            ? QString::number(c.rtMid, 'f', 2) : QString::fromUtf8("—")));
+        if (!c.ok) {
+            problems << I18n::tr(kCase[p]) + QStringLiteral(": ") + vaErrorText(c, mech);
+        } else if (c.overSurface) {
+            problems << I18n::tr(kCase[p]) + QStringLiteral(": ")
+                + I18n::tr("rah_va_warn_surface")
+                      .arg(QString::number(c.listedArea, 'f', 0),
+                           QString::number(a.surface, 'f', 0));
+        }
+    }
+    QString note = I18n::tr("rah_va_result_note").arg(vaFormulaName(f));
+    if (!problems.isEmpty())
+        note += QStringLiteral("\n") + problems.join(QStringLiteral("\n"));
+    m_vaResultNote->setText(note);
+    m_vaResultNote->setVisible(true);
+    m_vaResult->setVisible(true);
+    m_vaCsvBtn->setEnabled(true);
+    m_vaHasResult = true;
+    m_vaResultKey = vaBatchKey();
+}
+
+void RoomAcousticsTab::exportVariableAcousticsCsv()
+{
+    if (!m_vaHasResult) return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, I18n::tr("rah_va_csv"), "variable_acoustics.csv", "CSV (*.csv)");
+    if (path.isEmpty()) return;
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    auto quote = [](QString v) {
+        v.replace('"', QStringLiteral("\"\""));
+        return '"' + v + '"';
+    };
+    QStringList head;
+    for (int c = 0; c < m_vaResult->columnCount(); ++c)
+        head << quote(m_vaResult->horizontalHeaderItem(c)->text());
+    out << head.join(',') << '\n';
+    for (int r = 0; r < m_vaResult->rowCount(); ++r) {
+        QStringList row;
+        for (int c = 0; c < m_vaResult->columnCount(); ++c) {
+            const QTableWidgetItem *it = m_vaResult->item(r, c);
+            const QString v = it ? it->text() : QString();
+            row << (c < 2 ? quote(v) : v);
+        }
+        out << row.join(',') << '\n';
+    }
 }
 
 // ── IR解析ページ ────────────────────────────────────────────────────────────
@@ -3367,6 +3850,8 @@ void RoomAcousticsTab::refreshBudgetDerived()
             it->setText(QString::number(A1k, 'f', 0));
     }
     m_updating = false;
+    // 可変音響の ΔT は吸音バジェットから計算するので、編集の度に追随させる
+    refreshVariableAcoustics();
 }
 
 void RoomAcousticsTab::applyBudgetTable()
@@ -3548,6 +4033,7 @@ void RoomAcousticsTab::recomputeAll()
     refreshIrPage();
     refreshSpatialPage();
     refreshReinforcePage();
+    refreshVariableAcoustics();
 }
 
 // ── レポート出力 ────────────────────────────────────────────────────────────

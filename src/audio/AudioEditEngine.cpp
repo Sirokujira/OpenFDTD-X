@@ -494,18 +494,24 @@ AudioBuffer repeatRange(const AudioBuffer &in, std::size_t a, std::size_t z,
 }
 
 AudioBuffer crossfadeConcat(const AudioBuffer &a, const AudioBuffer &b,
-                            double overlapSec)
+                            double overlapSec, std::string *error)
 {
+    if (error) error->clear();
     if (a.sampleCount() == 0) return b;
     if (b.sampleCount() == 0) return a;
-    // fs が異なる場合は b を a の fs へ変換して結合する。変換不能な fs
-    // (非整数等) のみ b のサンプルをそのまま用いる (resampleTo は失敗時に
-    // 入力を変更せず返す)
+    // fs が異なる場合は b を a の fs へ変換して結合する。変換できなければ
+    // 結合しない: b のサンプルを a の fs のまま並べると音程・速度が黙って
+    // ずれる (負債 #12 の「黙って変換しない」方針)。a を返して理由を報告する
     AudioBuffer bb;
     const AudioBuffer *pb = &b;
     if (a.sampleRateHz > 0.0 && b.sampleRateHz > 0.0 &&
         a.sampleRateHz != b.sampleRateHz) {
-        bb = resampleTo(b, a.sampleRateHz);
+        std::string why;
+        bb = resampleTo(b, a.sampleRateHz, &why);
+        if (!why.empty()) {
+            if (error) *error = why;
+            return a;
+        }
         pb = &bb;
     }
     const double sr = (a.sampleRateHz > 0.0) ? a.sampleRateHz
