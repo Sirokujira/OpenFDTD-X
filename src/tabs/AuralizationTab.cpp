@@ -64,6 +64,36 @@ const bool s_i18nBatch = [] {
     ofd::I18n::reg("aurb_col_status", "状態", "Status");
     ofd::I18n::reg("aurb_name_disabled", "(無効)", "(disabled)");
     ofd::I18n::reg("aurb_listen", "▶ 試聴", "▶ Play");
+    // ④ A/B 試聴 (単発実行)。一括表の ▶ 試聴と同じく外部プレイヤーで開く
+    ofd::I18n::reg("aurab_play_dry", "▶ ドライを試聴", "▶ Play dry");
+    ofd::I18n::reg("aurab_play_wet", "▶ ウェットを試聴", "▶ Play wet");
+    ofd::I18n::reg("aurab_play_tip",
+        "外部プレイヤーで開きます (アプリ内再生は未対応)",
+        "Opens in an external player (in-app playback is not supported)");
+    ofd::I18n::reg("aurab_none_tip",
+        "畳み込みを実行すると、その実行のファイルを開けるようになります",
+        "Run the convolution to enable playing that run's files");
+    ofd::I18n::reg("aurab_dry_failed_tip",
+        "前処理後のドライを書き出せなかったため開けません。元ファイルと"
+        "比べると前処理の差も混ざって聞こえます",
+        "The pre-processed dry could not be written, so it cannot be played. "
+        "Comparing with the original file would also include the "
+        "pre-processing difference");
+    ofd::I18n::reg("aurab_dry_written",
+        "A/B 比較用に、実際に畳み込んだドライ (前処理後) を %1 に書き出しました",
+        "For the A/B comparison, the dry actually convolved (after "
+        "pre-processing) was written to %1");
+    ofd::I18n::reg("aurab_dry_write_failed",
+        "前処理後のドライを書き出せませんでした (%1)。ドライの試聴は無効です",
+        "Could not write the pre-processed dry (%1). Playing the dry is "
+        "disabled");
+    ofd::I18n::reg("aurab_missing", "ファイルがありません: %1",
+                   "File not found: %1");
+    ofd::I18n::reg("aurab_open_failed",
+        "外部プレイヤーで開けませんでした (WAV に関連付けられたアプリが"
+        "無い可能性があります): %1",
+        "Could not open it in an external player (no application may be "
+        "associated with WAV files): %1");
     ofd::I18n::reg("aurb_listen_tip",
                    "書き出した WAV を外部プレイヤーで開く (アプリ内再生は未対応)",
                    "Open the exported WAV in an external player "
@@ -315,6 +345,20 @@ AuralizationTab::AuralizationTab(Project *project, QWidget *parent)
     abRow->addLayout(dryCol, 1);
     abRow->addLayout(wetCol, 1);
     sAb->vbox()->addLayout(abRow);
+    // 試聴ボタン。実行が成功するまで無効 (開くファイルがその実行のもので
+    // あることを保証する)
+    auto *playRow = new QHBoxLayout();
+    m_abDryBtn = new QPushButton(I18n::tr("aurab_play_dry"), sAb);
+    m_abWetBtn = new QPushButton(I18n::tr("aurab_play_wet"), sAb);
+    playRow->addWidget(m_abDryBtn);
+    playRow->addWidget(m_abWetBtn);
+    playRow->addStretch(1);
+    sAb->vbox()->addLayout(playRow);
+    connect(m_abDryBtn, &QPushButton::clicked, this,
+            [this] { openForListening(m_abDryFile); });
+    connect(m_abWetBtn, &QPushButton::clicked, this,
+            [this] { openForListening(m_abWetFile); });
+    setListenFiles(QString(), QString());
     // 未実装機能を動作済みと誤解させないための明示注記
     auto *playbackNote = new QLabel(I18n::tr("aur_playback_note"), sAb);
     playbackNote->setWordWrap(true);
@@ -564,13 +608,17 @@ void AuralizationTab::runConvolution()
         std::vector<double> dry, wet;
         double fs = 0.0;
         bool prepped = false;   // 音源の前処理を適用したか (注記用)
+        bool dryWritten = false;   // A/B 用の前処理後ドライを書けたか
     };
     auto d = std::make_shared<RunData>();
     const QString dryPath = s.auralizationDryFile;
     const QString rirPath = s.rirPath;
     const QString outPath = m_outPath->text();
     const int gainMode = s.auralizationGainMode;
+    const QString preppedDry = tabhelp::preppedDryPathFor(outPath);
 
+    // 前の実行のファイルはこの実行で上書きされうるので、試聴は止める
+    setListenFiles(QString(), QString());
     m_runBusy = true;
     updateBusyUi();
     m_status->setText(I18n::tr("aur_status_running"));
@@ -580,12 +628,14 @@ void AuralizationTab::runConvolution()
     // 使うので、従来と結果はビット一致する。
     const audioedit::SourcePrep prep = tabhelp::sourcePrep(m_p->acoustic());
     QThread *th = QThread::create([d, dryPath, rirPath, outPath, gainMode,
-                                   prep] {
+                                   prep, preppedDry] {
         d->res = tabhelp::convolveWithPrep(dryPath, rirPath, outPath, gainMode,
                                            prep, &d->prepped, &d->dry, &d->wet,
-                                           &d->fs, &d->note);
+                                           &d->fs, &d->note, preppedDry,
+                                           &d->dryWritten);
     });
-    connect(th, &QThread::finished, this, [this, th, d, outPath, gainMode] {
+    connect(th, &QThread::finished, this, [this, th, d, dryPath, outPath,
+                                           preppedDry, gainMode] {
         th->deleteLater();
         m_runBusy = false;
         updateBusyUi();
@@ -638,8 +688,14 @@ void AuralizationTab::runConvolution()
                                                             note.toHz,
                                                             validBand))
             warn << QStringLiteral("• ") + n;
-        if (d->prepped)   // 黙って音源を加工しない (適用した事実を必ず出す)
+        if (d->prepped) {  // 黙って音源を加工しない (適用した事実を必ず出す)
             warn << QStringLiteral("• ") + I18n::tr("aur_src_prep_note");
+            warn << QStringLiteral("• ")
+                        + (d->dryWritten
+                               ? I18n::tr("aurab_dry_written").arg(preppedDry)
+                               : I18n::tr("aurab_dry_write_failed")
+                                     .arg(preppedDry));
+        }
         if (gainApplied)
             warn << QStringLiteral("• ") + I18n::tr("aur_post_gain_note");
         for (const std::string &w : info.warnings)
@@ -650,6 +706,16 @@ void AuralizationTab::runConvolution()
         // ④ A/B 波形
         m_dryPlot->setSeries(waveformSeries(dry, fs, QColor("#0078D4")));
         m_wetPlot->setSeries(waveformSeries(wet, fs, QColor("#2E8B57")));
+        // ④ A/B 試聴。ドライは「実際に畳み込んだもの」を開く — 前処理が
+        // 無ければ元ファイルそのもの、有れば書き出した前処理後のドライ。
+        // 書けなかったときは元ファイルで代用しない (前処理の差が混ざる)
+        if (!d->prepped)
+            setListenFiles(dryPath, outPath);
+        else if (d->dryWritten)
+            setListenFiles(preppedDry, outPath);
+        else
+            setListenFiles(QString(), outPath,
+                           I18n::tr("aurab_dry_failed_tip"));
 
         m_status->setText(I18n::tr("aur_status_ok").arg(outPath));
     });
@@ -665,7 +731,34 @@ void AuralizationTab::clearResult(const QString &statusText)
     m_warnings->setVisible(false);
     m_dryPlot->setSeries({});
     m_wetPlot->setSeries({});
+    setListenFiles(QString(), QString());
     m_status->setText(statusText);
+}
+
+void AuralizationTab::setListenFiles(const QString &dryFile,
+                                     const QString &wetFile,
+                                     const QString &dryUnavailableTip)
+{
+    m_abDryFile = dryFile;
+    m_abWetFile = wetFile;
+    m_abDryBtn->setEnabled(!dryFile.isEmpty());
+    m_abWetBtn->setEnabled(!wetFile.isEmpty());
+    m_abDryBtn->setToolTip(!dryFile.isEmpty() ? I18n::tr("aurab_play_tip")
+                           : !dryUnavailableTip.isEmpty() ? dryUnavailableTip
+                           : I18n::tr("aurab_none_tip"));
+    m_abWetBtn->setToolTip(!wetFile.isEmpty() ? I18n::tr("aurab_play_tip")
+                                              : I18n::tr("aurab_none_tip"));
+}
+
+void AuralizationTab::openForListening(const QString &path)
+{
+    if (path.isEmpty()) return;
+    if (!QFileInfo::exists(path)) {   // 実行後に消された / 移された
+        m_status->setText(I18n::tr("aurab_missing").arg(path));
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+        m_status->setText(I18n::tr("aurab_open_failed").arg(path));
 }
 
 // ── ⑤ 複数受音点の一括可聴化 ────────────────────────────────────────────────

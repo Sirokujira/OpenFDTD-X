@@ -34,6 +34,15 @@ audioedit::SourcePrep sourcePrep(const AcousticOpts &a);
 // (isIdentity) なら読み込んだバッファをそのまま畳み込むので、従来の
 // QtAcousticAdapter::convolveFiles と結果はビット一致する。
 // outPrepped には前処理を適用したかを入れる (UI が必ず明示するため)。
+//
+// preppedDryPath を渡すと、前処理を適用したとき (= 畳み込んだドライが元
+// ファイルと違うとき) だけ、**実際に畳み込んだドライ**をウェットと同じ
+// Float32 で書き出す。A/B 試聴で元ファイルと比べると、部屋の響きの差に
+// 前処理 (トリム / HPF / ゲイン) の差まで混ざって聞こえるため
+// (ADR-0005 決定 5 の「ドライ / ウェット WAV を書き出して比較」)。
+// 書き出すのは畳み込みが成功した後だけで、入力のドライ・RIR・ウェットと
+// 同じパスには決して書かない (利用者の音源を上書きしない)。書けたかは
+// *outPreppedDryWritten に入る。書けなくても畳み込みの結果は返す。
 acoustics::AcousticResult<acoustics::ConvolutionInfo>
 convolveWithPrep(const QString &dryPath, const QString &rirPath,
                  const QString &outputPath, int gainMode,
@@ -42,7 +51,13 @@ convolveWithPrep(const QString &dryPath, const QString &rirPath,
                  std::vector<double> *outDry = nullptr,
                  std::vector<double> *outWet = nullptr,
                  double *outSampleRate = nullptr,
-                 QtAcousticAdapter::RirResampleNote *outResample = nullptr);
+                 QtAcousticAdapter::RirResampleNote *outResample = nullptr,
+                 const QString &preppedDryPath = QString(),
+                 bool *outPreppedDryWritten = nullptr);
+
+// A/B 試聴用に、前処理後のドライを書き出すパス。ウェットの隣に
+// "<ウェットの基本名>_dry.wav" を置く (例: hall.wav → hall_dry.wav)。
+QString preppedDryPathFor(const QString &wetPath);
 
 // 品質トークン ("valid" / "warning" / それ以外=invalid) → バッジ文字列
 QString qualityBadge(const QString &token);

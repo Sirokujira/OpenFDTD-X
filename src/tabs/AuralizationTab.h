@@ -13,8 +13,10 @@
 //               RIR をドライ側 fs へリサンプリングして続行し、変換した旨を
 //               結果に明示する (core/Resampler — 負債 #12 解消)。fs 自体が
 //               不正で変換できない場合のみエラー理由を表示する
-//   ④ A/B    — ドライ / ウェット波形の MiniPlot 並置。アプリ内再生は
-//               未対応 (書き出した WAV を外部プレイヤーで比較する) と明示
+//   ④ A/B    — ドライ / ウェット波形の MiniPlot 並置と「▶ 試聴」ボタン
+//               (外部プレイヤーで開く)。アプリ内再生は未対応と明示する。
+//               前処理を掛けた実行では、ドライの試聴は元ファイルではなく
+//               実際に畳み込んだドライ (<ウェット名>_dry.wav) を開く
 //   ⑤ 一括   — 複数受音点の一括可聴化。受音点リスト (AcousticOpts::receivers)
 //               の各行に受音点ごとの RIR WAV (ReceiverRow::rirFile, .ofdx
 //               追加キー) を割り当て、有効かつ RIR 指定済みの行を順に畳み込んで
@@ -149,6 +151,15 @@ private:
     // ④ A/B 波形
     MiniPlot *m_dryPlot = nullptr;
     MiniPlot *m_wetPlot = nullptr;
+    // ④ A/B 試聴 (外部プレイヤー)。直近の**成功した実行**が書いた / 使った
+    // ファイルだけを開く (残存ファイルを別の実行の結果として出さない)
+    QPushButton *m_abDryBtn = nullptr;
+    QPushButton *m_abWetBtn = nullptr;
+    QString m_abDryFile;
+    QString m_abWetFile;
+    void openForListening(const QString &path);
+    void setListenFiles(const QString &dryFile, const QString &wetFile,
+                        const QString &dryUnavailableTip = QString());
 
     // ⑤ 複数受音点の一括可聴化
     struct BatchJob {
