@@ -348,7 +348,7 @@ const char *kRed  = "#E53935";
 
 QString oeDataDir()
 {
-    QSettings s(QSettings::UserScope, QStringLiteral("OpenFDTD"),
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope, QStringLiteral("OpenFDTD"),
                 QStringLiteral("OceanData"));
     const QString def = QStandardPaths::writableLocation(
                             QStandardPaths::GenericDataLocation)
@@ -358,7 +358,7 @@ QString oeDataDir()
 
 void setOeDataDir(const QString &dir)
 {
-    QSettings s(QSettings::UserScope, QStringLiteral("OpenFDTD"),
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope, QStringLiteral("OpenFDTD"),
                 QStringLiteral("OceanData"));
     s.setValue(QStringLiteral("dir"), dir);
 }

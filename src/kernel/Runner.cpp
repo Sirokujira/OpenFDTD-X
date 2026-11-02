@@ -76,16 +76,21 @@ const char *Runner::homeVarFor(Kernel k) {
 // GUI で設定したカーネルディレクトリの永続化。環境変数が届かない起動経路
 // (macOS の Finder / Dock 起動など) でもカーネルの場所を指定できるように、
 // openfdtd_x / openuwa で共有する専用スコープに保存する。
+// 書式は QSettings::defaultFormat() を明示する。スコープ指定の QSettings は
+// 既定では常にネイティブ (Windows はレジストリ) になり setDefaultFormat が効かず、
+// selftest が利用者の本物の設定を読み書きしてしまう (カーネルの場所を登録済みの
+// 環境で検査が落ち、並行して走る別の selftest を壊す)。既定の書式は誰も変えなければ
+// NativeFormat なので、本番の保存先は従来と同じ。
 QString Runner::kernelDirSetting(Kernel k)
 {
-    QSettings s(QSettings::UserScope,
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
                 QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
     return s.value(QLatin1String(homeVarFor(k))).toString();
 }
 
 void Runner::setKernelDirSetting(Kernel k, const QString &dir)
 {
-    QSettings s(QSettings::UserScope,
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
                 QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
     if (dir.isEmpty()) s.remove(QLatin1String(homeVarFor(k)));
     else               s.setValue(QLatin1String(homeVarFor(k)), dir);
@@ -130,14 +135,14 @@ QString Runner::resolvedSolverPath(const RunConfig &cfg)
 
 QString Runner::mpiLauncherSetting()
 {
-    QSettings s(QSettings::UserScope,
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
                 QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
     return s.value(QStringLiteral("MPI_LAUNCHER")).toString();
 }
 
 void Runner::setMpiLauncherSetting(const QString &path)
 {
-    QSettings s(QSettings::UserScope,
+    QSettings s(QSettings::defaultFormat(), QSettings::UserScope,
                 QStringLiteral("OpenFDTD"), QStringLiteral("Kernels"));
     if (path.isEmpty()) s.remove(QStringLiteral("MPI_LAUNCHER"));
     else                s.setValue(QStringLiteral("MPI_LAUNCHER"), path);
