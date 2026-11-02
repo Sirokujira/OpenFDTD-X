@@ -12,6 +12,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -37,6 +38,8 @@ public:
 private:
     // feed 表を .ofd の feed 行に合わせて作り直す (refresh から呼ぶ)
     void refreshFeedTable();
+    // 障害物の材質表を geometries() に合わせて作り直す (refresh から呼ぶ)
+    void refreshObsTable();
 
 public:
 
@@ -86,10 +89,22 @@ private:
     QLineEdit    *m_execPath = nullptr;
     QSpinBox     *m_threads = nullptr, *m_processes = nullptr;
     QCheckBox    *m_multiSource = nullptr; // 複数音源 (ADR-0010)
+    QCheckBox    *m_angleDep = nullptr;    // 角度依存吸音 (ADR-0011)
     // feed ごとのゲイン・遅延 (.ofdx acoustic.feeds — ADR-0010 Decision 7)。
     // 行は .ofd の feed 行と 1 対 1 (行数は refresh で feeds().size() に
     // 合わせる)。ゲイン/遅延のセルは QDoubleSpinBox で契約の値域を保証する。
     QTableWidget *m_feedTable = nullptr;
+    // 障害物の材質 (.ofdx acoustic.obstacles — ADR-0012)。行は .ofd の
+    // geometry 行と 1 対 1。列 = 番号 / 形状 / 材質あり / α 125..4k Hz (6)。
+    QTableWidget *m_obsTable = nullptr;
+    // 幾何音響ソルバーの設定 (.ofdx acoustic.ga — ADR-0013)。値域は
+    // ソルバーの契約と同じ (範囲外はソルバーが非零終了するので UI で防ぐ)。
+    QSpinBox       *m_gaOrder = nullptr, *m_gaRays = nullptr;
+    QDoubleSpinBox *m_gaScatter = nullptr;
+    QCheckBox      *m_gaAir = nullptr;
+    QDoubleSpinBox *m_gaTemp = nullptr, *m_gaHumid = nullptr, *m_gaPress = nullptr;
+    QCheckBox      *m_gaRadiusAuto = nullptr, *m_gaDurAuto = nullptr;
+    QDoubleSpinBox *m_gaRadius = nullptr, *m_gaDur = nullptr;
     QPushButton  *m_btnRun = nullptr, *m_btnStop = nullptr;
     QLabel       *m_resolved = nullptr;    // 解決されたバイナリ or 未検出
     QLabel       *m_status = nullptr;

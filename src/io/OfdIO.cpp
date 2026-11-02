@@ -876,24 +876,71 @@ QByteArray OfdxIO::serialize(const Project &p)
         // 2 本が .ofd の全 feed を強度 1・t = 0 で同時発火した重ね合わせを
         // rir.wav に出す (両ソルバーが同じキーを読む — 対称が契約の一部)。
         if (a.multiSource) ac["multi_source"] = true;
+        // 角度依存吸音 (ADR-0011) — 既定 (false) ならキー自体を書かない
+        // (旧ファイルとバイト一致。絶対規則 2)。acoustic 直下に置くのは
+        // FDTD / 幾何音響の両ソルバーが読むため (片方だけ切り替わると
+        // ハイブリッドのクロスオーバーで壁が食い違う)。
+        if (a.angleDependentAbsorption) ac["angle_dependent_absorption"] = true;
+        {   // 幾何音響ソルバーの設定 (ADR-0013) — 明示されたキーだけ書き、
+            // 1 つも無ければ "ga" 自体を書かない (旧ファイルとバイト一致。
+            // 絶対規則 2)。ここで扱わない子キー (obstacles、scattering 配列
+            // など) は未知キー保持 (ADR-0003 案B) が "ga" の中へ書き戻す。
+            const AcousticOpts::GaParams &g = a.ga;
+            QJsonObject go;
+            if (g.hasImageOrder) go["image_order"] = g.imageOrder;
+            if (g.hasRays) go["rays"] = g.rays;
+            if (g.hasScattering && !g.scatteringIsArray)
+                go["scattering"] = g.scattering;
+            if (g.hasAir) go["air_absorption"] = g.airAbsorption;
+            if (g.hasTemp) go["temperature_c"] = g.temperatureC;
+            if (g.hasHumid) go["humidity_percent"] = g.humidityPct;
+            if (g.hasPress) go["pressure_kpa"] = g.pressureKpa;
+            if (g.hasRadius) go["receiver_radius_m"] = g.receiverRadiusM;
+            if (g.hasDuration) go["duration_s"] = g.durationS;
+            if (!go.isEmpty()) ac["ga"] = go;
+        }
+        // 障害物の材質 (ADR-0012) — 行が無ければキー自体を書かない
+        // (旧ファイルとバイト一致。絶対規則 2)。acoustic 直下 = 両ソルバーが
+        // 読む。各行の他のキー (name / scattering 等) はそのまま書き戻す。
+        if (!a.obstacleMaterials.isEmpty()) {
+            QJsonArray obs;
+            for (const AcousticOpts::ObstacleMaterial &m : a.obstacleMaterials) {
+                QJsonObject o = m.extra;
+                QJsonArray al;
+                for (double v : m.alpha) al.append(v);
+                o["geometry"] = m.geometry;
+                o["alpha"] = al;
+                obs.append(o);
+            }
+            ac["obstacles"] = obs;
+        }
         {   // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — 全行が既定
             // (gain = 1, delay = 0) ならキー自体を書かない (旧ファイルと
             // バイト一致。絶対規則 2)。キー名が "sources" でないのは、
             // そちらを音源一覧 (AcousticSourceTab の配置表) が既に使って
             // いるため — 意味も並びも別物なので分けてある (混ぜると
             // ソルバーが feed のゲインとして静かに誤読する)。
-            const AcousticOpts::FeedDrive def;
+            // 指向性 (ADR-0014) の directivity / aim と、行の他のキーも
+            // 「既定でない」に数える。行の他のキー (extra) はそのまま
+            // 書き戻す (GUI で gain を変えても手書きのキーを落とさない)。
             bool any = false;
             for (const AcousticOpts::FeedDrive &f : a.feedDrives)
-                if (f.gain != def.gain || f.delaySec != def.delaySec) {
+                if (!f.isDefault()) {
                     any = true;
                     break;
                 }
             if (any) {
                 QJsonArray fd;
-                for (const AcousticOpts::FeedDrive &f : a.feedDrives)
-                    fd.append(QJsonObject{ {"gain", f.gain},
-                                           {"delay_s", f.delaySec} });
+                for (const AcousticOpts::FeedDrive &f : a.feedDrives) {
+                    QJsonObject o = f.extra;
+                    o["gain"] = f.gain;
+                    o["delay_s"] = f.delaySec;
+                    if (!f.directivity.isUndefined())
+                        o["directivity"] = f.directivity;
+                    if (f.hasAim)
+                        o["aim"] = QJsonArray{ f.aim[0], f.aim[1], f.aim[2] };
+                    fd.append(o);
+                }
                 ac["feeds"] = fd;
             }
         }
@@ -1625,6 +1672,67 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         a.rtFormula = ac.value("rt_formula").toInt(a.rtFormula);
         // 複数音源 (ADR-0010) — 追加キー。欠落時は false (旧ファイル互換)
         a.multiSource = ac.value("multi_source").toBool(a.multiSource);
+        // 角度依存吸音 (ADR-0011) — 追加キー。欠落時は false (旧ファイル互換)
+        a.angleDependentAbsorption = ac.value("angle_dependent_absorption")
+                                         .toBool(a.angleDependentAbsorption);
+        // 幾何音響ソルバーの設定 (ADR-0013) — 欠落キーは未設定 (ソルバー既定)。
+        // scattering がバンド別の配列なら GUI では編集せず、未知キー保持で
+        // そのまま書き戻す (scatteringIsArray)。
+        if (ac.contains("ga") && ac["ga"].isObject()) {
+            const QJsonObject go = ac["ga"].toObject();
+            AcousticOpts::GaParams &g = a.ga;
+            if (go.contains("image_order")) {
+                g.hasImageOrder = true; g.imageOrder = go["image_order"].toInt(g.imageOrder);
+            }
+            if (go.contains("rays")) {
+                g.hasRays = true; g.rays = go["rays"].toInt(g.rays);
+            }
+            if (go.contains("scattering")) {
+                if (go["scattering"].isArray()) g.scatteringIsArray = true;
+                else { g.hasScattering = true;
+                       g.scattering = go["scattering"].toDouble(g.scattering); }
+            }
+            if (go.contains("air_absorption")) {
+                g.hasAir = true; g.airAbsorption = go["air_absorption"].toBool(g.airAbsorption);
+            }
+            if (go.contains("temperature_c")) {
+                g.hasTemp = true; g.temperatureC = go["temperature_c"].toDouble(g.temperatureC);
+            }
+            if (go.contains("humidity_percent")) {
+                g.hasHumid = true; g.humidityPct = go["humidity_percent"].toDouble(g.humidityPct);
+            }
+            if (go.contains("pressure_kpa")) {
+                g.hasPress = true; g.pressureKpa = go["pressure_kpa"].toDouble(g.pressureKpa);
+            }
+            if (go.contains("receiver_radius_m")) {
+                g.hasRadius = true;
+                g.receiverRadiusM = go["receiver_radius_m"].toDouble(g.receiverRadiusM);
+            }
+            if (go.contains("duration_s")) {
+                g.hasDuration = true; g.durationS = go["duration_s"].toDouble(g.durationS);
+            }
+        }
+        // 障害物の材質 (ADR-0012) — 追加キー。欠落時は空 (全障害物が剛体)。
+        // alpha の足りないバンドは最後の値で外挿 (ソルバーと同じ規則)、
+        // 0..1 にクランプ。他のキーは extra に保持して書き戻す。
+        if (ac.contains("obstacles")) {
+            a.obstacleMaterials.clear();
+            for (const QJsonValue &v : ac["obstacles"].toArray()) {
+                QJsonObject o = v.toObject();
+                AcousticOpts::ObstacleMaterial m;
+                m.geometry = o.value("geometry").toInt(0);
+                const QJsonArray al = o.value("alpha").toArray();
+                for (int b = 0; b < 6; ++b) {
+                    const double x = al.isEmpty() ? 0.0
+                        : al.at(qMin(b, al.size() - 1)).toDouble(0.0);
+                    m.alpha[b] = qBound(0.0, x, 1.0);
+                }
+                o.remove("geometry");
+                o.remove("alpha");
+                m.extra = o;
+                a.obstacleMaterials.push_back(m);
+            }
+        }
         if (ac.contains("absorption")) {
             a.absorption.clear();
             for (const QJsonValue &v : ac["absorption"].toArray()) {
@@ -1684,16 +1792,45 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         // キーが無い旧ファイルは空 (= 全 feed が既定 gain 1 / delay 0)。
         // 手書きファイルの範囲外値でソルバーが拒否する .ofdx を作らない
         // よう、契約の値域へクランプして読む。
+        // 指向性 (ADR-0014) : directivity の数値 a (単体・配列の各要素) は
+        // 0..1 へクランプし、名前はそのまま持つ (未知の名前はソルバーが
+        // 理由つきで拒否する — GUI が別の指向性へ黙って置き換えない)。
+        // aim は 3 要素の数値配列のときだけ読み、それ以外は行の他のキーと
+        // 同じく extra に残して書き戻す (同じくソルバーが理由つきで拒否)。
         if (ac.contains("feeds")) {
             a.feedDrives.clear();
             for (const QJsonValue &v : ac["feeds"].toArray()) {
-                const QJsonObject o = v.toObject();
+                QJsonObject o = v.toObject();
                 AcousticOpts::FeedDrive f;
                 f.gain = qBound(-1000.0, o.value("gain").toDouble(f.gain),
                                 1000.0);
                 f.delaySec = qBound(0.0,
                                     o.value("delay_s").toDouble(f.delaySec),
                                     1.0);
+                o.remove("gain");
+                o.remove("delay_s");
+                if (o.contains("directivity")) {
+                    QJsonValue d = o.value("directivity");
+                    if (d.isDouble()) {
+                        d = qBound(0.0, d.toDouble(), 1.0);
+                    } else if (d.isArray()) {
+                        QJsonArray arr = d.toArray();
+                        for (int i = 0; i < arr.size(); ++i)
+                            if (arr.at(i).isDouble())
+                                arr[i] = qBound(0.0, arr.at(i).toDouble(), 1.0);
+                        d = arr;
+                    }
+                    f.directivity = d;
+                    o.remove("directivity");
+                }
+                const QJsonArray aim = o.value("aim").toArray();
+                if (aim.size() == 3 && aim.at(0).isDouble()
+                    && aim.at(1).isDouble() && aim.at(2).isDouble()) {
+                    f.hasAim = true;
+                    for (int i = 0; i < 3; ++i) f.aim[i] = aim.at(i).toDouble();
+                    o.remove("aim");
+                }
+                f.extra = o;
                 a.feedDrives.push_back(f);
             }
         }

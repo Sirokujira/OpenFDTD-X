@@ -118,6 +118,9 @@ Accepted (2026-08-15、2026-08-16 改訂: Decision 7 で feed ごとの
   Decision 7 で `acoustic.feeds[]` として対応した。
   指向性が必要になったら同じ `sources` 側に追加キーで拡張する
   (バンド別の指向性パターンの定義を伴うため、別途判断)。
+  **2026-10-31 追記**: 指向性は ADR-0014 で `acoustic.feeds[]` の行に
+  `directivity` / `aim` として追加した (上の「`sources` 側」は Decision 7
+  のキー名修正の前の記述 — 正しくは `feeds`)。
 - (−) 「音源ごとの個別 RIR」(rir_s2.wav 等) も範囲外 — ファイル契約の
   変更 (ADR-0007 の改訂) を伴うため、必要になったら別 ADR にする。
 - GUI 側のトグル UI (AcousticSolverTab「複数音源」) と `.ofdx` 書き出しは

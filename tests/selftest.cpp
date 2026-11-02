@@ -1541,6 +1541,85 @@ static void testRoomAcoustics()
               "src->feed sync: zero enabled keeps feeds unchanged");
     }
 
+    // ── 音源リストの種類・向き → feed ごとの指向性 (ADR-0014) ────────────────
+    // Cardioid は "cardioid" + 向き (parseAim と同じ単位ベクトル)、Omni は
+    // 無指向、Bipolar / Directional は 1 次パターンで表せないので無指向 +
+    // 件数報告、向きの読めない Cardioid は向きなし + 件数報告 (起動前点検が
+    // 止める)。全行無指向なら feedDrives は空 (キーを書かない)。
+    {
+        Project p;
+        auto &sl = p.acoustic().sources;
+        sl.clear();
+        auto mk = [](int kind, const char *aim) {
+            AcousticSourceRow r;
+            r.kind = kind;
+            r.aim = QString::fromUtf8(aim);
+            r.x_m = 1.0; r.y_m = 1.0; r.z_m = 1.0;
+            return r;
+        };
+        sl << mk(AcousticSourceRow::Omni, "+X")
+           << mk(AcousticSourceRow::Cardioid, "-Z 30°")
+           << mk(AcousticSourceRow::Bipolar, "+Y")
+           << mk(AcousticSourceRow::Cardioid, "towards the stage");
+        // 置き換え前の feed のゲインは新しい feed とは対応しないので消える
+        AcousticOpts::FeedDrive stale;
+        stale.gain = 3.0;
+        p.acoustic().feedDrives = { stale };
+        AcousticSourceTab::SyncReport rep;
+        const int n = AcousticSourceTab::syncFeedsFromSources(p, &rep);
+        const auto &fd = p.acoustic().feedDrives;
+        check(n == 4 && fd.size() == 4, "src->feed dir: one drive per feed");
+        if (fd.size() == 4) {
+            double v[3];
+            const bool ok = parseAim(QStringLiteral("-Z 30°"), v);
+            check(fd[0].directivity.isUndefined() && !fd[0].hasAim
+                  && fd[0].gain == 1.0,
+                  "src->feed dir: omni row stays omni (stale gain reset)");
+            check(ok && fd[1].directivity.toString() == "cardioid" && fd[1].hasAim
+                  && std::abs(fd[1].aim[0] - v[0]) < 1e-12
+                  && std::abs(fd[1].aim[2] - v[2]) < 1e-12,
+                  "src->feed dir: cardioid row gets the parsed aim");
+            check(fd[2].directivity.isUndefined(),
+                  "src->feed dir: bipolar is not faked as a first-order pattern");
+            check(fd[3].directivity.toString() == "cardioid" && !fd[3].hasAim,
+                  "src->feed dir: unreadable aim leaves the aim empty");
+        }
+        check(rep.unrepresentable == 1 && rep.noAim == 1,
+              "src->feed dir: the report counts both kinds of loss");
+        // 向きの読めない行は起動前点検が止める (ソルバーも非零終了する条件)
+        for (int a = 0; a < 3; ++a) {
+            MeshAxis &m = p.mesh(a);
+            m.nodes.clear(); m.divs.clear();
+            m.nodes << 0.0 << 4.0;
+            m.divs << 16;
+        }
+        Probe pr; pr.x = 3.0; pr.y = 3.0; pr.z = 3.0;
+        p.probes().push_back(pr);
+        check(ofd::preflight::acousticRunProblems(p).size() == 1,
+              "src->feed dir: preflight stops the aimless cardioid feed");
+
+        // 全行無指向 : feedDrives は空 (旧ファイルとバイト一致の経路)
+        Project q;
+        q.acoustic().sources.clear();
+        q.acoustic().sources << mk(AcousticSourceRow::Omni, "")
+                             << mk(AcousticSourceRow::Omni, "+X");
+        q.acoustic().feedDrives = { stale };
+        AcousticSourceTab::syncFeedsFromSources(q);
+        check(q.acoustic().feedDrives.isEmpty(),
+              "src->feed dir: all-omni sync writes no feeds key");
+        // 既定の音源リスト (カーディオイド 3 行、向き "-Z 30°" / "-Z") は
+        // 3 つとも向きつきのカーディオイドになる
+        Project r;
+        r.acoustic().sources = defaultAcousticSources();
+        AcousticSourceTab::SyncReport rr;
+        AcousticSourceTab::syncFeedsFromSources(r, &rr);
+        bool allCard = r.acoustic().feedDrives.size() == 3;
+        for (const auto &d : r.acoustic().feedDrives)
+            if (d.directivity.toString() != "cardioid" || !d.hasAim) allCard = false;
+        check(allCard && rr.unrepresentable == 0 && rr.noAim == 0,
+              "src->feed dir: default sources become aimed cardioids");
+    }
+
     // ── 音源リストの信号 (WAV) → 可聴化のドライ音源 ──────────────────────────
     // AuralizationTab::drySourceCandidates / setDryFromSource:
     // 「有効かつ信号が非空の行」だけがドライ音源の候補で、選んだ 1 行の
@@ -3982,6 +4061,254 @@ static void testAudioEditEngine()
                   "msrc-ofdx: missing key falls back to false (feed #1 only)");
         }
 
+        // ── 角度依存吸音 (.ofdx acoustic.angle_dependent_absorption —
+        //    ADR-0011) ──
+        // 同じく追加キー: 既定 (false) ならキーを書かず、戻せばバイト一致。
+        // 両ソルバーが acoustic 直下で読むので、acoustic.ga の中ではなく
+        // acoustic 直下に出ること (ソルバー側の FDTD は acoustic.ga を丸ごと
+        // 読み飛ばす) も確かめる。
+        {
+            ofd::Project ap;
+            QString e6;
+            const QString p6 = dir.filePath("angdep.ofd");
+            const QString sc6 = dir.filePath("angdep.ofdx");
+            auto bytes6 = [&] {
+                QFile f(sc6);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(ap.save(p6, &e6), "angdep-ofdx: default saved");
+            const QByteArray base6 = bytes6();
+            check(!base6.contains("angle_dependent_absorption"),
+                  "angdep-ofdx: defaults write no angle_dependent_absorption key");
+
+            ap.acoustic().angleDependentAbsorption = true;
+            check(ap.save(p6, &e6), "angdep-ofdx: enabled saved");
+            check(bytes6().contains("\"angle_dependent_absorption\": true"),
+                  "angdep-ofdx: enabling writes angle_dependent_absorption: true");
+            {
+                QFile f(sc6);
+                const QJsonObject ac = f.open(QIODevice::ReadOnly)
+                    ? QJsonDocument::fromJson(f.readAll()).object()
+                          .value("acoustic").toObject()
+                    : QJsonObject();
+                check(ac.value("angle_dependent_absorption").toBool(false),
+                      "angdep-ofdx: key sits directly under acoustic (both solvers read it)");
+            }
+
+            ofd::Project rd6;
+            check(rd6.load(p6, &e6), "angdep-ofdx: reloaded");
+            check(rd6.acoustic().angleDependentAbsorption,
+                  "angdep-ofdx: round-trips the angle-dependent flag");
+            check(!rd6.acoustic().multiSource,
+                  "angdep-ofdx: independent of the multi-source flag");
+
+            rd6.acoustic().angleDependentAbsorption = false;
+            check(rd6.save(p6, &e6), "angdep-ofdx: reverted saved");
+            check(bytes6() == base6,
+                  "angdep-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o6;
+            check(!o6.acoustic().angleDependentAbsorption,
+                  "angdep-ofdx: missing key falls back to false (normal incidence)");
+        }
+
+        // ── 障害物の材質 (.ofdx acoustic.obstacles — ADR-0012) ──
+        // 追加キー: 行が無ければキーを書かず、戻せばバイト一致。acoustic 直下に
+        // 出ること、各行の他のキー (幾何音響の scattering 等) が往復で落ちない
+        // こと、手書きの短い alpha が最後の値で外挿されること、geometry の
+        // 挿入・削除で番号が追随することを確かめる。
+        {
+            ofd::Project op;
+            QString e7;
+            const QString p7 = dir.filePath("obs.ofd");
+            const QString sc7 = dir.filePath("obs.ofdx");
+            auto bytes7 = [&] {
+                QFile f(sc7);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto acoustic7 = [&] {
+                return QJsonDocument::fromJson(bytes7()).object()
+                    .value("acoustic").toObject();
+            };
+            check(op.save(p7, &e7), "obs-ofdx: default saved");
+            const QByteArray base7 = bytes7();
+            check(!acoustic7().contains("obstacles"),
+                  "obs-ofdx: defaults write no obstacles key");
+
+            ofd::AcousticOpts::ObstacleMaterial m;
+            m.geometry = 2;
+            const double al[6] = {0.10, 0.12, 0.16, 0.20, 0.24, 0.30};
+            for (int b = 0; b < 6; ++b) m.alpha[b] = al[b];
+            m.extra["scattering"] = 0.4;
+            m.extra["name"] = QStringLiteral("stage riser");
+            op.acoustic().obstacleMaterials = { m };
+            check(op.save(p7, &e7), "obs-ofdx: material saved");
+            {
+                const QJsonArray obs = acoustic7().value("obstacles").toArray();
+                const QJsonObject o = obs.isEmpty() ? QJsonObject()
+                                                    : obs.at(0).toObject();
+                check(obs.size() == 1 && o.value("geometry").toInt() == 2,
+                      "obs-ofdx: row sits directly under acoustic with its geometry index");
+                check(o.value("alpha").toArray().size() == 6
+                      && o.value("alpha").toArray().at(5).toDouble() == 0.30,
+                      "obs-ofdx: writes the six band alphas");
+                check(o.value("scattering").toDouble() == 0.4
+                      && o.value("name").toString() == QStringLiteral("stage riser"),
+                      "obs-ofdx: keeps the other keys of the row (scattering, name)");
+            }
+
+            ofd::Project rd7;
+            check(rd7.load(p7, &e7), "obs-ofdx: reloaded");
+            {
+                const auto &om = rd7.acoustic().obstacleMaterials;
+                bool same = om.size() == 1 && om[0].geometry == 2;
+                for (int b = 0; same && b < 6; ++b) same = om[0].alpha[b] == al[b];
+                check(same, "obs-ofdx: round-trips geometry index and alphas");
+                check(om.size() == 1 && om[0].extra.value("scattering").toDouble() == 0.4,
+                      "obs-ofdx: round-trips the extra keys");
+            }
+            check(rd7.save(p7, &e7) && acoustic7().value("obstacles").toArray()
+                      .at(0).toObject().value("scattering").toDouble() == 0.4,
+                  "obs-ofdx: load -> save keeps the geometric solver's scattering");
+
+            {   // 手書きの短い alpha は最後の値で外挿 (ソルバーと同じ規則)、
+                // 範囲外は 0..1 にクランプ
+                QJsonObject root = QJsonDocument::fromJson(bytes7()).object();
+                QJsonObject ac = root.value("acoustic").toObject();
+                ac["obstacles"] = QJsonArray{ QJsonObject{
+                    {"geometry", 1}, {"alpha", QJsonArray{0.2, 1.5}} } };
+                root["acoustic"] = ac;
+                QFile f(sc7);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                      && f.write(QJsonDocument(root).toJson()) > 0,
+                      "obs-ofdx: hand-written short row prepared");
+                f.close();
+                ofd::Project hw;
+                check(hw.load(p7, &e7), "obs-ofdx: hand-written row loaded");
+                const auto &om = hw.acoustic().obstacleMaterials;
+                check(om.size() == 1 && om[0].alpha[0] == 0.2
+                      && om[0].alpha[1] == 1.0 && om[0].alpha[5] == 1.0,
+                      "obs-ofdx: short alpha extrapolated by its last value and clamped");
+            }
+
+            {   // geometry の挿入・削除で番号が追随する
+                ofd::AcousticOpts a;
+                ofd::AcousticOpts::ObstacleMaterial m1, m3;
+                m1.geometry = 1; m3.geometry = 3;
+                a.obstacleMaterials = { m1, m3 };
+                a.geometryRemoved(1);            // geometry #2 を削除
+                check(a.obstacleMaterials.size() == 2
+                      && a.obstacleMaterials[0].geometry == 1
+                      && a.obstacleMaterials[1].geometry == 2,
+                      "obs-ofdx: deleting a geometry shifts the later indices down");
+                a.geometryRemoved(0);            // geometry #1 (材質あり) を削除
+                check(a.obstacleMaterials.size() == 1
+                      && a.obstacleMaterials[0].geometry == 1,
+                      "obs-ofdx: deleting a geometry drops its own material");
+                a.geometryInserted(0);           // 先頭に挿入
+                check(a.obstacleMaterials.size() == 1
+                      && a.obstacleMaterials[0].geometry == 2,
+                      "obs-ofdx: inserting a geometry shifts the later indices up");
+            }
+
+            rd7.acoustic().obstacleMaterials.clear();
+            check(rd7.save(p7, &e7), "obs-ofdx: reverted saved");
+            check(bytes7() == base7,
+                  "obs-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o7;
+            check(o7.acoustic().obstacleMaterials.isEmpty(),
+                  "obs-ofdx: missing key falls back to no materials (rigid)");
+        }
+
+        // ── 幾何音響ソルバーの設定 (.ofdx acoustic.ga — ADR-0013) ──
+        // 明示した項目だけを書き (全部未設定ならキー自体を書かない)、ここで
+        // 扱わない手書きの子キー (obstacles / バンド別 scattering 配列) は
+        // 未知キー保持で残り、既定に戻した項目は古い値で復活しないこと。
+        {
+            ofd::Project gp;
+            QString e8;
+            const QString p8 = dir.filePath("gaopt.ofd");
+            const QString sc8 = dir.filePath("gaopt.ofdx");
+            auto bytes8 = [&] {
+                QFile f(sc8);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto ga8 = [&] {
+                return QJsonDocument::fromJson(bytes8()).object()
+                    .value("acoustic").toObject().value("ga").toObject();
+            };
+            check(gp.save(p8, &e8), "ga-ofdx: default saved");
+            const QByteArray base8 = bytes8();
+            check(!QJsonDocument::fromJson(base8).object().value("acoustic")
+                       .toObject().contains("ga"),
+                  "ga-ofdx: defaults write no ga key");
+
+            gp.acoustic().ga.hasImageOrder = true; gp.acoustic().ga.imageOrder = 3;
+            gp.acoustic().ga.hasRays = true;       gp.acoustic().ga.rays = 50000;
+            check(gp.save(p8, &e8), "ga-ofdx: settings saved");
+            {
+                const QJsonObject g = ga8();
+                check(g.value("image_order").toInt() == 3 && g.value("rays").toInt() == 50000,
+                      "ga-ofdx: writes the explicit items under acoustic.ga");
+                check(g.size() == 2,
+                      "ga-ofdx: items left unset are not written (solver defaults)");
+            }
+            ofd::Project rd8;
+            check(rd8.load(p8, &e8), "ga-ofdx: reloaded");
+            check(rd8.acoustic().ga.hasImageOrder && rd8.acoustic().ga.imageOrder == 3
+                  && rd8.acoustic().ga.hasRays && rd8.acoustic().ga.rays == 50000
+                  && !rd8.acoustic().ga.hasScattering,
+                  "ga-ofdx: round-trips the explicit items only");
+
+            {   // 手書きの acoustic.ga : GUI が扱わない子キーは保存しても残る
+                QJsonObject root = QJsonDocument::fromJson(bytes8()).object();
+                QJsonObject ac = root.value("acoustic").toObject();
+                ac["ga"] = QJsonObject{
+                    {"image_order", 3}, {"temperature_c", 20.25},
+                    {"scattering", QJsonArray{0.1, 0.2, 0.3}},
+                    {"obstacles", QJsonArray{ QJsonObject{{"geometry", 1},
+                                                          {"scattering", 1.0}} }} };
+                root["acoustic"] = ac;
+                QFile f(sc8);
+                check(f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                      && f.write(QJsonDocument(root).toJson()) > 0,
+                      "ga-ofdx: hand-written ga prepared");
+                f.close();
+            }
+            ofd::Project hw8;
+            check(hw8.load(p8, &e8), "ga-ofdx: hand-written ga loaded");
+            check(hw8.acoustic().ga.scatteringIsArray && !hw8.acoustic().ga.hasScattering
+                  && hw8.acoustic().ga.temperatureC == 20.25,
+                  "ga-ofdx: per-band scattering array is recognised (not edited)");
+            check(hw8.save(p8, &e8), "ga-ofdx: hand-written ga re-saved");
+            {
+                const QJsonObject g = ga8();
+                check(g.value("scattering").isArray() && g.value("obstacles").isArray()
+                      && g.value("temperature_c").toDouble() == 20.25
+                      && g.value("image_order").toInt() == 3,
+                      "ga-ofdx: keys the GUI does not model survive saving");
+            }
+            hw8.acoustic().ga.hasImageOrder = false;   // 既定に戻す
+            hw8.acoustic().ga.imageOrder = 2;
+            check(hw8.save(p8, &e8), "ga-ofdx: reset item saved");
+            {
+                const QJsonObject g = ga8();
+                check(!g.contains("image_order") && g.value("obstacles").isArray(),
+                      "ga-ofdx: an item reset to its default is not revived from the file");
+            }
+
+            rd8.acoustic().ga = ofd::AcousticOpts::GaParams{};
+            check(rd8.save(p8, &e8), "ga-ofdx: reverted saved");
+            check(bytes8() == base8,
+                  "ga-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o8;
+            check(!o8.acoustic().ga.hasImageOrder && !o8.acoustic().ga.hasRadius
+                  && !o8.acoustic().ga.hasDuration,
+                  "ga-ofdx: missing key falls back to solver defaults (auto)");
+        }
+
         // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —
         //    ADR-0010 Decision 7) ──
         // 追加キー: 全行が既定 (gain 1 / delay 0) ならキーを書かず、
@@ -4060,6 +4387,138 @@ static void testAudioEditEngine()
             ofd::Project o5;
             check(o5.acoustic().feedDrives.isEmpty(),
                   "feeds-ofdx: missing key means every feed at gain 1 / delay 0");
+        }
+
+        // ── 音源の指向性 (.ofdx acoustic.feeds[].directivity / aim —
+        //    ADR-0014) ──
+        // 無指向のままならキーを書かず、名前・向きは往復し、手書きの数値・
+        // 配列・行の未知キーは GUI 経由の保存で落ちない。
+        {
+            ofd::Project dp;
+            QString e6;
+            const QString p6 = dir.filePath("feeddir.ofd");
+            const QString sc6 = dir.filePath("feeddir.ofdx");
+            auto bytes6 = [&] {
+                QFile f(sc6);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            auto feeds6 = [&] {
+                return QJsonDocument::fromJson(bytes6()).object()["acoustic"]
+                    .toObject()["feeds"].toArray();
+            };
+            auto writeFeeds6 = [&](const QJsonArray &rows) {
+                QFile f(sc6);
+                if (!f.open(QIODevice::ReadOnly)) return false;
+                QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+                f.close();
+                QJsonObject acObj = root["acoustic"].toObject();
+                acObj["feeds"] = rows;
+                root["acoustic"] = acObj;
+                QFile w(sc6);
+                if (!w.open(QIODevice::WriteOnly)) return false;
+                w.write(QJsonDocument(root).toJson());
+                return true;
+            };
+            check(dp.save(p6, &e6), "dir-ofdx: default saved");
+            const QByteArray base6 = bytes6();
+
+            // 無指向の既定行 (directivity 未定義・向きなし) はキーを書かない
+            dp.acoustic().feedDrives = { AcousticOpts::FeedDrive{} };
+            check(dp.save(p6, &e6) && bytes6() == base6,
+                  "dir-ofdx: an omni default row stays byte-identical");
+
+            // 名前と向き (ゲイン・遅延は既定のまま) でも行を書く
+            AcousticOpts::FeedDrive cd;
+            cd.directivity = QStringLiteral("cardioid");
+            cd.hasAim = true;
+            cd.aim[0] = 0.0; cd.aim[1] = -1.0; cd.aim[2] = 0.5;
+            dp.acoustic().feedDrives = { cd };
+            check(dp.save(p6, &e6), "dir-ofdx: directional saved");
+            {
+                const QJsonArray rows = feeds6();
+                const QJsonObject o = rows.isEmpty() ? QJsonObject()
+                                                     : rows.at(0).toObject();
+                check(rows.size() == 1
+                      && o.value("directivity").toString() == "cardioid"
+                      && o.value("aim").toArray()
+                             == QJsonArray({ 0.0, -1.0, 0.5 })
+                      && o.value("gain").toDouble() == 1.0
+                      && o.value("delay_s").toDouble() == 0.0,
+                      "dir-ofdx: directivity and aim are written with the row");
+            }
+            ofd::Project rd6;
+            check(rd6.load(p6, &e6), "dir-ofdx: reloaded");
+            check(rd6.acoustic().feedDrives.size() == 1
+                  && rd6.acoustic().feedDrives[0].directivity.toString()
+                         == "cardioid"
+                  && rd6.acoustic().feedDrives[0].hasAim
+                  && rd6.acoustic().feedDrives[0].aim[1] == -1.0
+                  && rd6.acoustic().feedDrives[0].aim[2] == 0.5
+                  && rd6.acoustic().feedDrives[0].extra.isEmpty(),
+                  "dir-ofdx: name and aim round-trip");
+
+            // 無指向へ戻せば旧ファイルとバイト一致
+            rd6.acoustic().feedDrives[0].directivity =
+                QJsonValue(QJsonValue::Undefined);
+            rd6.acoustic().feedDrives[0].hasAim = false;
+            check(rd6.save(p6, &e6) && bytes6() == base6,
+                  "dir-ofdx: reverting to omni restores byte-identical output");
+
+            // 手書きのバンド別配列・数値・行の未知キーは保持して書き戻す
+            // (GUI で gain を変えても落とさない — 以前は {gain, delay_s} だけを
+            // 書き戻していたので、手書きの directivity が黙って消えていた)。
+            // 範囲外の a は契約の値域 0..1 へクランプして読む。
+            check(writeFeeds6(QJsonArray{
+                      QJsonObject{ {"gain", 1.0}, {"delay_s", 0.0},
+                                   {"directivity", QJsonArray{ 1.0, 0.5, -0.2 }},
+                                   {"aim", QJsonArray{ 1.0, 0.0, 0.0 }},
+                                   {"future_key", 7} },
+                      QJsonObject{ {"directivity", 1.5} },
+                      QJsonObject{ {"directivity", "shotgun"},
+                                   {"aim", QJsonArray{ 1.0, 0.0 }} } }),
+                  "dir-ofdx: hand-written rows");
+            ofd::Project hw;
+            check(hw.load(p6, &e6), "dir-ofdx: hand-written reload");
+            check(hw.acoustic().feedDrives.size() == 3
+                  && hw.acoustic().feedDrives[0].directivity
+                         == QJsonValue(QJsonArray{ 1.0, 0.5, 0.0 })
+                  && hw.acoustic().feedDrives[1].directivity.toDouble() == 1.0
+                  && hw.acoustic().feedDrives[2].directivity.toString()
+                         == "shotgun",
+                  "dir-ofdx: numbers clamp to 0..1, names stay as written");
+            check(!hw.acoustic().feedDrives[2].hasAim
+                  && hw.acoustic().feedDrives[2].extra.contains("aim"),
+                  "dir-ofdx: a malformed aim is kept raw for the solver to refuse");
+            hw.acoustic().feedDrives[0].gain = 0.5;   // GUI での編集
+            check(hw.save(p6, &e6), "dir-ofdx: edited hand-written saved");
+            {
+                const QJsonArray rows = feeds6();
+                const QJsonObject o0 = rows.size() > 0 ? rows.at(0).toObject()
+                                                       : QJsonObject();
+                const QJsonObject o2 = rows.size() > 2 ? rows.at(2).toObject()
+                                                       : QJsonObject();
+                check(rows.size() == 3 && o0.value("gain").toDouble() == 0.5
+                      && o0.value("directivity").toArray()
+                             == QJsonArray({ 1.0, 0.5, 0.0 })
+                      && o0.value("future_key").toInt() == 7
+                      && o0.value("aim").toArray() == QJsonArray({ 1.0, 0.0, 0.0 })
+                      && o2.value("directivity").toString() == "shotgun"
+                      && o2.value("aim").toArray() == QJsonArray({ 1.0, 0.0 }),
+                      "dir-ofdx: editing gain keeps the per-band array, aim "
+                      "and unknown row keys");
+            }
+            // isDirectional / 名前の判定 (プリフライトとソルバーの規則)
+            AcousticOpts::FeedDrive t;
+            check(!t.isDirectional() && t.aimIsZero(),
+                  "dir-ofdx: the default row is omni with no aim");
+            t.directivity = QStringLiteral("omni");
+            check(!t.isDirectional(), "dir-ofdx: \"omni\" is not directional");
+            t.directivity = 0.99;
+            check(t.isDirectional(), "dir-ofdx: a < 1 is directional");
+            check(AcousticOpts::FeedDrive::isKnownDirectivityName("figure8")
+                  && AcousticOpts::FeedDrive::isKnownDirectivityName("supercardioid")
+                  && !AcousticOpts::FeedDrive::isKnownDirectivityName("dipole"),
+                  "dir-ofdx: the known names match the solvers");
         }
 
         // 旧ファイル (source_wav 無し) は既定値のまま
@@ -4815,6 +5274,48 @@ static void testAcousticPreflight()
         p.feeds()[0].z = 3.0;
         check(acousticRunProblems(p).isEmpty(),
               "preflight: a source exactly on the boundary is accepted");
+    }
+
+    // 音源の指向性 (ADR-0014) : 無指向でない音源に向きが無い / 未知の名前は
+    // ソルバーが非零終了するので、起動前に feed 表を名指しして止める
+    {
+        Project p; makeRoom(p);
+        AcousticOpts::FeedDrive d;
+        d.directivity = QStringLiteral("cardioid");
+        p.acoustic().feedDrives = { d };
+        const QStringList bad = acousticRunProblems(p);
+        check(bad.size() == 1 && bad.first().contains(QStringLiteral("aim"))
+                  && bad.first().contains(QStringLiteral("音響ソルバ連携")),
+              "preflight: a directional feed without aim names the feed table");
+        p.acoustic().feedDrives[0].hasAim = true;
+        p.acoustic().feedDrives[0].aim[0] = 0.0;
+        check(acousticRunProblems(p).size() == 1,
+              "preflight: a zero aim vector counts as no aim");
+        p.acoustic().feedDrives[0].aim[2] = -1.0;
+        check(acousticRunProblems(p).isEmpty(),
+              "preflight: a directional feed with a non-zero aim is accepted");
+
+        Project q; makeRoom(q);
+        AcousticOpts::FeedDrive e;
+        e.directivity = QJsonArray{ 1.0, 1.0, 1.0, 1.0, 1.0, 0.0 };
+        q.acoustic().feedDrives = { e };
+        check(acousticRunProblems(q).size() == 1,
+              "preflight: a per-band array with one band below 1 needs an aim");
+        q.acoustic().feedDrives[0].directivity = QJsonArray{ 1.0, 1.0 };
+        check(acousticRunProblems(q).isEmpty(),
+              "preflight: an all-ones array is omni (no aim needed)");
+        q.acoustic().feedDrives[0].directivity = QStringLiteral("shotgun");
+        const QStringList nm = acousticRunProblems(q);
+        check(nm.size() == 1 && nm.first().contains(QStringLiteral("shotgun")),
+              "preflight: an unknown directivity name is reported by name");
+
+        // feed 行を超える手書きの行はソルバーが無視するので点検しない
+        Project r; makeRoom(r);
+        AcousticOpts::FeedDrive omni, extraRow;
+        extraRow.directivity = QStringLiteral("figure8");
+        r.acoustic().feedDrives = { omni, extraRow };
+        check(acousticRunProblems(r).isEmpty(),
+              "preflight: rows beyond the feed count are not checked");
     }
 
     // セル総数の上限 (OpenAcoustics と同じ 3,000 万)

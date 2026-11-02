@@ -12,6 +12,7 @@
 #include <QScrollArea>
 #include <QVector>
 #include "../core/Project.h"   // AcousticSourceRow (音源リストの行)
+#include "../core/AimDirection.h"   // parseAim (向き文字列 -> 単位ベクトル)
 #include "../audio/AudioEditEngine.h"   // SourcePrep (入力信号の前処理)
 
 class QCheckBox;
@@ -53,13 +54,26 @@ public:
     // その位置に Z 向き・既定の振幅/位相/内部抵抗の feed を作り、既存 feed
     // リストを置き換える。反映件数 (= 新しい feed 数) を返す。有効行が 0 の
     // ときは feed を一切変更せず 0 を返す。
-    // レベル [dB] は校正が無いため振幅へ換算しない (絶対規則 6) —
-    // ソルバへ渡るのは位置のみ。Project::touch() は呼び出し側で行う。
-    // ofdx_selftest は GUI_SOURCES をリンクしないため、selftest から
-    // 直接検証できるようヘッダ内 inline 定義の static メソッドにしてある。
-    static int syncFeedsFromSources(Project &p)
+    // 種類と向きは feed ごとの指向性 (.ofdx acoustic.feeds[].directivity /
+    // aim — ADR-0014) として渡す: Omni = 無指向、Cardioid = "cardioid" +
+    // 向き (core/AimDirection の parseAim — "+X" / "-Z 30°" / "0,0,-1")。
+    // Bipolar / Directional は 1 次パターン D = a + (1-a) cos で表せないので
+    // 無指向のまま渡し、件数を report->unrepresentable に返す (別の指向性へ
+    // 黙って置き換えない)。Cardioid で向きが解けない行は "cardioid" だけを
+    // 書いて向きを空にし、report->noAim に数える (起動前点検が止める —
+    // ソルバーも向きの無い指向性は非零終了する)。feed ごとのゲイン・遅延は
+    // 置き換えた feed とは対応しないので既定 (1 / 0) に戻す。
+    // レベル [dB] は校正が無いため振幅へ換算しない (絶対規則 6)。
+    // Project::touch() は呼び出し側で行う。ofdx_selftest は GUI_SOURCES を
+    // リンクしないため、selftest から直接検証できるようヘッダ内 inline 定義の
+    // static メソッドにしてある。
+    struct SyncReport { int unrepresentable = 0; int noAim = 0; };
+    static int syncFeedsFromSources(Project &p, SyncReport *report = nullptr)
     {
         QVector<Feed> next;
+        QVector<AcousticOpts::FeedDrive> drives;
+        bool anyDir = false;
+        SyncReport rep;
         for (const AcousticSourceRow &r : p.acoustic().sources) {
             if (!r.enabled) continue;
             Feed f;                          // 向き Z・振幅/位相/Z0 は既定値
@@ -67,9 +81,30 @@ public:
             f.y = r.y_m;
             f.z = r.z_m;
             next.push_back(f);
+            AcousticOpts::FeedDrive d;       // ゲイン 1・遅延 0
+            if (r.kind == AcousticSourceRow::Cardioid) {
+                double v[3];
+                d.directivity = QStringLiteral("cardioid");
+                if (parseAim(r.aim, v)) {
+                    d.hasAim = true;
+                    d.aim[0] = v[0]; d.aim[1] = v[1]; d.aim[2] = v[2];
+                }
+                else {
+                    ++rep.noAim;
+                }
+                anyDir = true;
+            }
+            else if (r.kind != AcousticSourceRow::Omni) {
+                ++rep.unrepresentable;
+            }
+            drives.push_back(d);
         }
         if (next.isEmpty()) return 0;        // feed は変更しない
         p.feeds() = next;
+        // 全行が無指向なら空 (= キーを書かない。旧ファイルとバイト一致)
+        if (anyDir) p.acoustic().feedDrives = drives;
+        else        p.acoustic().feedDrives.clear();
+        if (report) *report = rep;
         return int(next.size());
     }
 

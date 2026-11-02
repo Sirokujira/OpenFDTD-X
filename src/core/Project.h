@@ -10,7 +10,9 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include "Domain.h"
 #include "Material.h"
 #include "Geometry.h"
@@ -530,6 +532,69 @@ struct AcousticOpts {
     // 自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
     bool    multiSource = false;
 
+    // ── 角度依存吸音 (.ofdx "acoustic.angle_dependent_absorption" — 追加キー。
+    //    ADR-0011) ──
+    // true で外部音響ソルバー 2 本が吸音表の alpha を**ランダム入射**の値と
+    // して読み、Paris の式の逆解 zeta で局所反応境界を作る (斜入射の反射が
+    // R(θ) = (ζcosθ−1)/(ζcosθ+1) になる)。false (既定) は従来どおり alpha を
+    // 垂直入射として R = √(1−α)。両ソルバーが同じキーを読む (対称)。
+    // 既定のままならキー自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
+    bool    angleDependentAbsorption = false;
+
+    // ── 障害物の材質 (.ofdx "acoustic.obstacles" — 追加キー。ADR-0012) ──
+    // .ofd の geometry 行 (= geometries() の並び) ごとの吸音率。外部音響
+    // ソルバー 2 本が同じキーを読み、FDTD は障害物と空気の界面を外壁と
+    // 同じインピーダンス境界に、幾何音響は障害物の面の反射に使う。行の
+    // 無い障害物は剛体 (従来動作)。空ならキー自体を書かない (旧ファイルと
+    // バイト一致 — 絶対規則 2)。geometry は 1 起点の番号なので、
+    // GeometryTab が行を挿入・削除したら geometryInserted/Removed で
+    // 追随させる (番号がずれると材質が別の障害物へ静かに移るため)。
+    struct ObstacleMaterial {
+        int    geometry = 0;                    // .ofd の geometry 行の 1 起点の番号
+        double alpha[6] = {0, 0, 0, 0, 0, 0};   // 125 Hz .. 4 kHz
+        // 他のキー (name / scattering / enabled …) はそのまま保持して書き戻す
+        // (幾何音響の scattering を GUI 経由の保存で落とさないため)
+        QJsonObject extra;
+    };
+    QVector<ObstacleMaterial> obstacleMaterials;
+
+    // ── 幾何音響ソルバーの設定 (.ofdx "acoustic.ga" — ADR-0013) ──
+    // ofdx_acoustic_ga だけが読むキー (FDTD は acoustic.ga を丸ごと読み
+    // 飛ばす)。各キーは「ファイルか利用者が明示した」ときだけ書く (has*)。
+    // 未設定 = ソルバー側の既定。全部未設定ならキー自体を書かない
+    // (旧ファイルとバイト一致 — 絶対規則 2)。ここで扱わないキー
+    // (acoustic.ga.obstacles、バンド別の scattering 配列など) は .ofdx の
+    // 未知キー保持 (ADR-0003 案B) がそのまま書き戻す。既定値・値域は
+    // ソルバー (OpenAcoustics ReadMe の acoustic.ga 表) と同じ。
+    struct GaParams {
+        bool   hasImageOrder = false;  int    imageOrder = 2;        // 1..3
+        bool   hasRays = false;        int    rays = 30000;          // 100..2,000,000
+        bool   hasScattering = false;  double scattering = 0.1;      // 0..1 (室の既定)
+        bool   scatteringIsArray = false;  // ファイルがバンド別の配列 — GUI では編集しない
+        bool   hasAir = false;         bool   airAbsorption = true;
+        bool   hasTemp = false;        double temperatureC = 20.0;   // -20..50
+        bool   hasHumid = false;       double humidityPct = 50.0;    // 0..100
+        bool   hasPress = false;       double pressureKpa = 101.325; // 50..120
+        bool   hasRadius = false;      double receiverRadiusM = 0.5; // 0 < r <= 10 (未設定 = 自動)
+        bool   hasDuration = false;    double durationS = 2.0;       // 0 < T <= 10 (未設定 = 自動)
+    };
+    GaParams ga;
+
+    // geometries() の 0 起点 at に行を挿入した / at の行を削除した
+    void geometryInserted(int at) {
+        for (ObstacleMaterial &m : obstacleMaterials)
+            if (m.geometry >= at + 1) ++m.geometry;
+    }
+    void geometryRemoved(int at) {
+        QVector<ObstacleMaterial> kept;
+        for (ObstacleMaterial m : obstacleMaterials) {
+            if (m.geometry == at + 1) continue;      // 消えた障害物の材質
+            if (m.geometry > at + 1) --m.geometry;
+            kept.push_back(m);
+        }
+        obstacleMaterials = kept;
+    }
+
     // ── feed ごとのゲイン・遅延 (.ofdx "acoustic.feeds" — 追加キー。
     //    ADR-0010 Decision 7) ──
     // 並びは .ofd の feed 行の順 (entry #1 = feed #1)。音源 i は
@@ -540,9 +605,50 @@ struct AcousticOpts {
     // acoustic.sources を**音源一覧**として既に使っているため。あちらは
     // GUI が置いた音源、こちらは .ofd の feed 行で並びも意味も別物なので、
     // 名前を分けてある (混ぜるとソルバーが静かに誤読する)。
+    //
+    // 指向性 (ADR-0014): D(θ) = a + (1−a) cosθ (θ は aim からの角度、
+    // 軸上 D(0) = 1)。directivity はファイルの値をそのまま持つ — 名前
+    // (omni / subcardioid / cardioid / supercardioid / hypercardioid /
+    // figure8)、数値 a、またはバンド別の配列 (125 Hz〜4 kHz)。Undefined =
+    // キーを書かない = 無指向 (旧ファイルとバイト一致)。aim は向き (長さは
+    // 無関係 — ソルバーが正規化する)。hasAim = false ならキーを書かない。
+    // extra は行の他のキー (前方互換 — 理解しないキーもそのまま書き戻す)。
     struct FeedDrive {
         double gain = 1.0;      // 線形ゲイン (|gain| <= 1000)
         double delaySec = 0.0;  // 発火遅延 [s] (0 .. 1)
+        QJsonValue directivity = QJsonValue(QJsonValue::Undefined);
+        bool   hasAim = false;
+        double aim[3] = { 0.0, 0.0, 0.0 };
+        QJsonObject extra;
+        // 既定 (= 行として書く必要が無い) か
+        bool isDefault() const {
+            return gain == 1.0 && delaySec == 0.0 && directivity.isUndefined()
+                && !hasAim && extra.isEmpty();
+        }
+        // 無指向でない (どこかのバンドで a < 1、または omni 以外の名前) か。
+        // ソルバーはこのとき 0 でない aim を要求する (無ければ非零終了)。
+        bool isDirectional() const {
+            if (directivity.isString())
+                return directivity.toString() != QLatin1String("omni");
+            if (directivity.isDouble()) return directivity.toDouble() < 1.0;
+            if (directivity.isArray()) {
+                const QJsonArray arr = directivity.toArray();
+                for (const QJsonValue &v : arr)
+                    if (v.isDouble() && v.toDouble() < 1.0) return true;
+            }
+            return false;
+        }
+        bool aimIsZero() const {
+            return !hasAim || (aim[0] == 0.0 && aim[1] == 0.0 && aim[2] == 0.0);
+        }
+        // ソルバーが知っている指向性の名前か (ADR-0014 Decision 2)
+        static bool isKnownDirectivityName(const QString &n) {
+            return n == QLatin1String("omni") || n == QLatin1String("subcardioid")
+                || n == QLatin1String("cardioid")
+                || n == QLatin1String("supercardioid")
+                || n == QLatin1String("hypercardioid")
+                || n == QLatin1String("figure8");
+        }
     };
     QVector<FeedDrive> feedDrives;
 
