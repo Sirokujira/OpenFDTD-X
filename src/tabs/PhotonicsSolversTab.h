@@ -56,6 +56,7 @@ private:
     void setMethod(int id);
     // 層構造テーブル = OpticalOpts::rcwaLayerList (光学タブで編集) のビュー
     void rebuildLayerTable();
+    void updateIncidenceWarn();
     QWidget *buildFdtdPage();
     QWidget *buildRcwaPage();
     QWidget *buildBpmPage();
@@ -80,6 +81,7 @@ private:
     QComboBox *m_trunc;
     QSpinBox  *m_slices;
     QLineEdit *m_incTheta, *m_incPhi, *m_incPsi;
+    QLabel    *m_incWarn = nullptr;     // 入射角が範囲外のときの警告
     QLineEdit *m_lamMin, *m_lamMax;
     QSpinBox  *m_lamPts;
     // BPM

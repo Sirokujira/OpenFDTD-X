@@ -824,6 +824,9 @@ static void compareProjects(const Project &a, const Project &b)
               "rcwalayer loss / fill_y round-trip");
     }
     check(oa.rcwa2d == ob.rcwa2d, "rcwa 2D flag round-trip");
+    check(nearlyEq(oa.rcwaTheta_deg, ob.rcwaTheta_deg) &&
+          nearlyEq(oa.rcwaPhi_deg, ob.rcwaPhi_deg),
+          "rcwa incidence round-trip");
     check(oa.rcwaPoles.size() == ob.rcwaPoles.size(),
           "rcwadispersion count round-trip");
     for (int i = 0; i < qMin(oa.rcwaPoles.size(), ob.rcwaPoles.size()); ++i) {
@@ -5663,6 +5666,154 @@ static void testRcwaExtensions()
     }
 }
 
+// RCWA / FMM の入射角 (rcwaincidence = θ φ)。FDTD の平面波 (planewave) とは
+// θ の意味が違う (planewave は波が来る方向で既定 θ = 90°、RCWA は法線からの
+// 入射角で −90 < θ < 90) ので、別のキー・別のモデルで持つ。
+static void testRcwaIncidence()
+{
+    g_file = "rcwa-inc";
+    auto rcwaProject = [](Project &p) {
+        OpticalOpts &o = p.optical();
+        o.solver = OpticalSolver::RCWA;
+        o.rcwaNx = 5;
+        o.rcwaPeriodX = 300.0;
+        o.rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                            RcwaLayer{ 4.0, 1.0, 0.5, 200.0 },
+                            RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+    };
+
+    // (a) 妥当性: −90 < θ < 90、有限値
+    check(isValidRcwaIncidence(0.0, 0.0), "rcwa-inc: normal incidence valid");
+    check(isValidRcwaIncidence(89.9, 270.0), "rcwa-inc: 89.9 deg valid");
+    check(isValidRcwaIncidence(-45.0, 0.0), "rcwa-inc: negative theta valid");
+    check(!isValidRcwaIncidence(90.0, 0.0), "rcwa-inc: 90 deg invalid");
+    check(!isValidRcwaIncidence(-90.0, 0.0), "rcwa-inc: -90 deg invalid");
+    check(!isValidRcwaIncidence(std::nan(""), 0.0), "rcwa-inc: NaN theta invalid");
+    check(!isValidRcwaIncidence(30.0, INFINITY), "rcwa-inc: infinite phi invalid");
+    // 書く条件: 角度が既定以外、または FDTD の平面波が有効
+    check(!rcwaWritesIncidence(0.0, 0.0, false), "rcwa-inc: default writes nothing");
+    check(rcwaWritesIncidence(30.0, 0.0, false), "rcwa-inc: theta writes the line");
+    check(rcwaWritesIncidence(0.0, 15.0, false), "rcwa-inc: phi writes the line");
+    check(rcwaWritesIncidence(0.0, 0.0, true),
+          "rcwa-inc: enabled plane wave forces the line");
+
+    // (b) 既定値なら行を書かない (従来とバイト一致)
+    {
+        Project p;
+        rcwaProject(p);
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwalayer = 2.25 2.25 0.5 0\n") &&
+              !out.contains("rcwaincidence") && !out.contains("planewave"),
+              "rcwa-inc: no incidence line by default");
+    }
+
+    // (c) 角度を書く。FDTD の平面波 (無効) の行は出ない
+    {
+        Project p;
+        rcwaProject(p);
+        p.optical().rcwaTheta_deg = 30.0;
+        p.optical().rcwaPhi_deg = 20.0;
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nrcwaincidence = 30 20\n"),
+              "rcwa-inc: rcwaincidence = theta phi written");
+        check(!out.contains("planewave"),
+              "rcwa-inc: the FDTD plane wave stays out of the file");
+        check(out.indexOf("rcwaincidence") > out.lastIndexOf("rcwalayer"),
+              "rcwa-inc: incidence follows the layer lines");
+
+        Project p2;
+        QString err;
+        check(OfdIO::parse(out, p2, &err), "rcwa-inc: reparse");
+        check(nearlyEq(p2.optical().rcwaTheta_deg, 30.0) &&
+              nearlyEq(p2.optical().rcwaPhi_deg, 20.0),
+              "rcwa-inc: angles parsed");
+        check(!p2.planewave().enabled,
+              "rcwa-inc: parsing does not enable the FDTD plane wave");
+        check(p2.extraLines().isEmpty(),
+              "rcwa-inc: rcwaincidence is not kept as an unknown line");
+        check(OfdIO::serialize(p2) == out, "rcwa-inc: reserialize is byte-identical");
+        compareProjects(p, p2);
+    }
+
+    // (d) FDTD の平面波が有効 (既定 θ = 90°) でも RCWA の角度を明示する。
+    //     書かないと orcwa は planewave の θ = 90° を RCWA の角度として読み、
+    //     「theta must be within (-90, 90)」で止まる。planewave 行と FDTD の
+    //     モデルには触れない
+    {
+        Project p;
+        rcwaProject(p);
+        p.planewave().enabled = true;
+        const QString out = OfdIO::serialize(p);
+        check(out.contains("\nplanewave = 90 0 1\n"),
+              "rcwa-inc: FDTD plane-wave line unchanged");
+        check(out.contains("\nrcwaincidence = 0 0\n"),
+              "rcwa-inc: explicit normal incidence when the plane wave is on");
+        check(p.planewave().theta == 90.0 && p.planewave().phi == 0.0,
+              "rcwa-inc: the FDTD plane-wave model is untouched");
+        Project p2;
+        QString err;
+        check(OfdIO::parse(out, p2, &err) && p2.planewave().enabled &&
+                  nearlyEq(p2.planewave().theta, 90.0) &&
+                  p2.optical().rcwaTheta_deg == 0.0,
+              "rcwa-inc: plane wave and RCWA angle parsed apart");
+        check(OfdIO::serialize(p2) == out,
+              "rcwa-inc: plane wave + incidence reserialize byte-identical");
+    }
+
+    // (e) RCWA 行を書かないとき (FDTD ソルバー / 不正な層) は角度も書かない。
+    //     FMM は RCWA と同じ orcwa なので同じ角度を書く
+    {
+        Project p;
+        rcwaProject(p);
+        p.optical().rcwaTheta_deg = 30.0;
+        p.optical().solver = OpticalSolver::FDTD;
+        check(!OfdIO::serialize(p).contains("rcwaincidence"),
+              "rcwa-inc: FDTD solver writes no incidence");
+        p.optical().solver = OpticalSolver::RCWA;
+        p.optical().rcwaLayerList[1].fill = 2.0;     // 不正な層
+        check(!OfdIO::serialize(p).contains("rcwaincidence"),
+              "rcwa-inc: invalid stack writes no incidence");
+        p.optical().rcwaLayerList[1].fill = 0.5;
+        p.optical().solver = OpticalSolver::FMM;
+        check(OfdIO::serialize(p).contains("\nrcwaincidence = 30 0\n"),
+              "rcwa-inc: FMM writes the same incidence");
+    }
+
+    // (f) .ofdx: 既定ならキーを書かない / ラウンドトリップ / 旧ファイル互換
+    {
+        Project p1;
+        rcwaProject(p1);
+        const QJsonObject plain = QJsonDocument::fromJson(OfdxIO::serialize(p1))
+                                      .object().value("optical").toObject()
+                                      .value("rcwa").toObject();
+        check(!plain.contains("incidence"), "rcwa-inc ofdx: no key by default");
+        p1.optical().rcwaTheta_deg = -12.5;
+        p1.optical().rcwaPhi_deg = 45.0;
+        QTemporaryFile f;
+        f.setFileTemplate(QDir::tempPath() + "/ofdx_rcwa_inc_XXXXXX.ofdx");
+        if (f.open()) {
+            check(OfdxIO::save(f.fileName(), p1), "rcwa-inc ofdx save");
+            Project p2;
+            check(OfdxIO::load(f.fileName(), p2), "rcwa-inc ofdx load");
+            check(nearlyEq(p2.optical().rcwaTheta_deg, -12.5) &&
+                  nearlyEq(p2.optical().rcwaPhi_deg, 45.0),
+                  "rcwa-inc ofdx angles");
+        }
+        QTemporaryFile old;
+        old.setFileTemplate(QDir::tempPath() + "/ofdx_rcwa_inc_old_XXXXXX.ofdx");
+        if (old.open()) {
+            old.write("{ \"schemaVersion\": \"1.0\", \"domain\": \"optical\","
+                      "  \"optical\": { \"solver\": 1, \"rcwa\": { \"nx\": 5 } } }");
+            old.flush();
+            Project p3;
+            check(OfdxIO::load(old.fileName(), p3) &&
+                      p3.optical().rcwaTheta_deg == 0.0 &&
+                      p3.optical().rcwaPhi_deg == 0.0,
+                  "rcwa-inc legacy ofdx keeps normal incidence");
+        }
+    }
+}
+
 // RCWA コア設定 (OpenRCWA の rcwa / rcwalayer キー) — .ofd/.ofdx 永続化。
 // キー仕様は OpenRCWA/sol/input_data.c が正: 単位は m、GUI は nm で保持する。
 static void testRcwaCore()
@@ -9888,6 +10039,36 @@ static void testOrcwaIntegration()
         for (const rcwa::EfficiencyPoint &pt : e.points)
             if (!(pt.rTE + pt.tTE < 1.0 - 1e-3 && pt.rTE > 0.5)) lossy = false;
         check(lossy, "orcwa: the Drude film reflects strongly and absorbs (R + T < 1)");
+    }
+
+    // (3) 斜め入射: 空気 / ガラスの単一界面に θ = 40°, φ = 30°。Fresnel 係数と
+    //     一致すること。FDTD の平面波 (既定 θ = 90°) を有効にしたままでも
+    //     orcwa が止まらないこと (rcwaincidence が planewave より優先される)
+    {
+        Project p;
+        base(p);
+        p.optical().rcwaNx = 2;
+        p.optical().rcwaLayerList = { RcwaLayer{ 1.0, 1.0, 0.5, 0.0 },
+                                      RcwaLayer{ 2.25, 2.25, 0.5, 0.0 } };
+        p.optical().rcwaTheta_deg = 40.0;
+        p.optical().rcwaPhi_deg = 30.0;
+        p.planewave().enabled = true;
+        QString log;
+        const QString d = runCase(p, QStringLiteral("oblique"), &log);
+        check(log.contains("incidence theta=40[deg] phi=30[deg]"),
+              "orcwa: the RCWA incidence angle reaches the kernel");
+        const double ti = 40.0 * M_PI / 180.0;
+        const double ci = std::cos(ti), st = std::sin(ti) / 1.5;
+        const double ct = std::sqrt(1.0 - st * st);
+        const double rs = (ci - 1.5 * ct) / (ci + 1.5 * ct);
+        const double rp = (1.5 * ci - ct) / (1.5 * ci + ct);
+        const rcwa::Efficiency e = rcwa::read(d + QStringLiteral("/rcwa_efficiency.csv"));
+        double worst = e.valid() ? 0.0 : 1.0;
+        for (const rcwa::EfficiencyPoint &q : e.points)
+            worst = std::max({ worst, std::fabs(q.rTE - rs * rs), std::fabs(q.rTM - rp * rp) });
+        check(worst < 1e-6, "orcwa: oblique air/glass interface matches Fresnel");
+        check(e.valid() && e.worstEnergyError() < 1e-6,
+              "orcwa: oblique incidence conserves energy (R + T = 1)");
     }
 }
 
@@ -27523,6 +27704,7 @@ int main(int argc, char *argv[])
     testOnnActivation();
     testRcwaCore();
     testRcwaExtensions();
+    testRcwaIncidence();
     testOpticsMaterials();
     testThinFilmStack();
     testFilmNotation();

@@ -338,10 +338,21 @@ const bool s_i18n = [] {
               "the re-run check boxes");
     I18n::reg("psol_uw_fdtd", "FDTD ページの入力 (シミュレーション時間・シャットオフ・サブピクセル・共形メッシュ等)",
               "the FDTD page inputs (simulation time, shutoff, subpixel averaging, conformal mesh, …)");
-    I18n::reg("psol_uw_rcwa", "Truncation 法・入射角 (θ, φ, ψ)・TE/TM・出力のチェック",
-              "the truncation scheme, the incidence angles (theta, phi, psi), TE/TM and the output check boxes");
-    I18n::reg("psol_uw_rcwa_ok", "周期・次数・層分割・波長範囲 (.ofdx へ保存されます)",
-              "the period, orders, layer slicing and wavelength range (saved to .ofdx)");
+    I18n::reg("psol_uw_rcwa", "Truncation 法・偏光角 ψ・TE/TM・出力のチェック",
+              "the truncation scheme, the polarisation angle psi, TE/TM and the output check boxes");
+    I18n::reg("psol_uw_rcwa_ok", "周期・次数・層分割・波長範囲 (.ofdx へ保存されます)・入射角 θ, φ (orcwa へ渡します)",
+              "the period, orders, layer slicing and wavelength range (saved to .ofdx) and the incidence angles theta, phi (passed to orcwa)");
+    I18n::reg("psol_inc_note",
+              "θ は法線からの入射角 (−90° < θ < 90°)、φ は入射面の方位 (RCWA / FMM 共通)。"
+              "波源タブの平面波 (FDTD — 波が来る方向) とは別の設定です。"
+              "ψ は未対応 — orcwa は TE / TM の両方を出力します。",
+              "θ is the angle from the normal (−90° < θ < 90°) and φ the azimuth of the plane "
+              "of incidence (shared by RCWA and FMM). It is separate from the plane wave on the "
+              "Source tab (FDTD — the direction the wave comes from). ψ is not supported — "
+              "orcwa outputs both TE and TM.");
+    I18n::reg("psol_inc_warn",
+              "▲ θ は −90° < θ < 90° で指定してください (このままでは計算を開始しません)",
+              "▲ θ must satisfy −90° < θ < 90° (the run will not start as is)");
     I18n::reg("psol_uw_bpm", "伝搬方向・伝搬距離・境界条件・双方向 / ベクトル / 出力のチェック",
               "the propagation direction and distance, the boundary condition and the bidirectional / vector / output check boxes");
     I18n::reg("psol_uw_bpm_ok", "アルゴリズム・Δz・n_ref・入射モード",
@@ -639,6 +650,11 @@ PhotonicsSolversTab::PhotonicsSolversTab(Project *project, QWidget *parent)
     for (auto *e : { m_px, m_py, m_lamMin, m_lamMax,
                      m_bpmDz, m_bpmNref })
         connect(e, &QLineEdit::editingFinished, this, applyCb);
+    for (auto *e : { m_incTheta, m_incPhi })
+        connect(e, &QLineEdit::editingFinished, this, [this, applyCb] {
+            applyCb();
+            updateIncidenceWarn();
+        });
     for (auto *c : { m_bpmAlgo, m_bpmInput })
         connect(c, &QComboBox::currentIndexChanged, this, applyCb);
     connect(m_fmmLi, &QCheckBox::toggled, this, applyCb);
@@ -753,6 +769,14 @@ QWidget *PhotonicsSolversTab::buildRcwaPage()
     incRow->addWidget(makeMuted(I18n::tr("psol_incidence_hint"), s));
     incRow->addStretch(1);
     s->form()->addRow(I18n::tr("psol_incidence"), incRow);
+    auto *incNote = makeMuted(I18n::tr("psol_inc_note"), s);
+    incNote->setWordWrap(true);
+    s->form()->addRow(incNote);
+    m_incWarn = new QLabel(I18n::tr("psol_inc_warn"), s);
+    m_incWarn->setWordWrap(true);
+    m_incWarn->setStyleSheet("color:#c0392b;");
+    m_incWarn->setVisible(false);
+    s->form()->addRow(m_incWarn);
 
     auto *lamRow = new QHBoxLayout();
     m_lamMin = makeNum("400", 90, s);
@@ -781,8 +805,9 @@ QWidget *PhotonicsSolversTab::buildRcwaPage()
     etaRow->addWidget(makeBadge(I18n::tr("psol_eta_rcwa"), "ok", s));
     etaRow->addStretch(1);
     s->form()->addRow(etaRow);
-    // Truncation 法・入射角 (θ, φ, ψ)・TE/TM/出力チェックは apply() が読まない
-    // (周期/次数/層分割/波長範囲のみ .ofdx へ反映 — 絶対規則 5)
+    // Truncation 法・偏光角 ψ・TE/TM/出力チェックは apply() が読まない
+    // (周期/次数/層分割/波長範囲は .ofdx、入射角 θ/φ は rcwaincidence 行へ反映 —
+    // 絶対規則 5)
     s->vbox()->addWidget(tabhelp::unwiredNote(s, I18n::tr("psol_uw_rcwa"), I18n::tr("psol_uw_rcwa_ok")));
     return s;
 }
@@ -904,6 +929,13 @@ QWidget *PhotonicsSolversTab::buildFmmPage()
     return s;
 }
 
+// 入射角が orcwa の範囲外なら警告を出す (計算開始は MainWindow が止める)
+void PhotonicsSolversTab::updateIncidenceWarn()
+{
+    const OpticalOpts &o = m_p->optical();
+    m_incWarn->setVisible(!isValidRcwaIncidence(o.rcwaTheta_deg, o.rcwaPhi_deg));
+}
+
 // ── 層構造テーブル (OpticalOpts::rcwaLayerList のビュー) ────────────────────
 // 材質は誘電率から屈折率 n = √εr を出して示す (RCWA 層は材質名を持たない)。
 // 先頭・末尾の層は半無限層として厚みがカーネルで無視される (Project.h)。
@@ -983,6 +1015,9 @@ void PhotonicsSolversTab::apply()
     o.lambdaMin = m_lamMin->text().toDouble();
     o.lambdaMax = m_lamMax->text().toDouble();
     o.lambdaDiv = m_lamPts->value();
+    // 入射角 (RCWA / FMM 共通、rcwaincidence 行)。FDTD の平面波には触れない
+    o.rcwaTheta_deg = m_incTheta->text().toDouble();
+    o.rcwaPhi_deg = m_incPhi->text().toDouble();
     // BPM (Δz は μm 入力 → .ofdx は nm)
     o.bpmAlgorithm = m_bpmAlgo->currentIndex();
     o.bpmInputMode = m_bpmInput->currentIndex();
@@ -1006,6 +1041,9 @@ void PhotonicsSolversTab::refresh()
     m_lamMin->setText(QString::number(o.lambdaMin, 'g', 8));
     m_lamMax->setText(QString::number(o.lambdaMax, 'g', 8));
     m_lamPts->setValue(o.lambdaDiv);
+    m_incTheta->setText(QString::number(o.rcwaTheta_deg, 'g', 8));
+    m_incPhi->setText(QString::number(o.rcwaPhi_deg, 'g', 8));
+    updateIncidenceWarn();
     m_bpmAlgo->setCurrentIndex(o.bpmAlgorithm);
     m_bpmInput->setCurrentIndex(o.bpmInputMode);
     m_bpmDz->setText(QString::number(o.bpmDz / 1000.0, 'g', 8));
