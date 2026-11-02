@@ -59,7 +59,10 @@ Linux は sudo が要るのでコマンドを表示するだけにしている�
 Windows 版は後始末までやる — `windeployqt` で Qt の DLL とプラグインを実行ファイルの
 隣へ置き (これが無いと Explorer からのダブルクリックが `0xC0000135` で無言のまま
 落ちる)、ヘッドレス用の `qoffscreen.dll` / `qminimal.dll` も入れ、MPI 版カーネルの
-隣に `msmpi.dll` を置く。詳しい前提と手順は
+隣に `msmpi.dll` を置く。構成とビルドは UTF-8 のコンソールで行う — 日本語版 MSVC
+ではこうしないとヘッダの依存が記録されず、ヘッダを変えても `.cpp` が再コンパイル
+されない (手で構成するときは `chcp 65001` してから。詳細は下記文書の
+「日本語版 MSVC のヘッダ依存」)。詳しい前提と手順は
 [docs/windows-cuda-mpi-build.md](docs/windows-cuda-mpi-build.md) を参照。
 
 `--help` / `-?` で全オプションが出る。ビルドの出力は `<repo>/build-<構成>.log`。

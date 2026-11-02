@@ -18,6 +18,11 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure   # 音響�
 - `ofdx_selftest` は .ofd ラウンドトリップ + voxelizer + .ofdx サイドカーの自己テスト。
   **チェック総数は減ってはならない** (回帰の兆候)。
 - GUI 実行不要のヘッドレス環境では常に `QT_QPA_PLATFORM=offscreen`。
+- **Windows の日本語版 MSVC + Ninja では、構成もビルドも `chcp 65001` のコンソールで行う。**
+  CP932 のままだと Ninja がヘッダ依存を記録せず、ヘッダを変えても `.cpp` が
+  再コンパイルされない (古い .obj が混ざる)。CP932 で作った build は一度
+  `--clean-first`。`tools/update-and-build.ps1` は自動でそうする
+  (docs/windows-cuda-mpi-build.md「日本語版 MSVC のヘッダ依存」)。
 - GUI スモーク (ヘッドレス):
   `QT_QPA_PLATFORM=offscreen ./build/openfdtd_x tests/data/dipole.ofd --screenshot /tmp/x.png`
   (macOS は `.app` バンドルになるため実体

@@ -57,10 +57,63 @@ set MSMPI_LIB64=%TOOLS%\msmpi\Library\lib
 set VCPKG_ROOT=%TOOLS%\vcpkg
 set QT_ROOT=C:\Users\%USERNAME%\Qt\6.8.3\msvc2022_64
 set PATH=%CUDA_PATH%\bin;%MSMPI_BIN%;%QT_ROOT%\bin;%VCPKG_ROOT%;%PATH%
+rem Required for non-English MSVC + Ninja (see "header dependencies" below)
+chcp 65001 >nul
 ```
 
 バッチファイルは ASCII で書く (cmd.exe は OEM コードページで読むため、
 日本語コメントや括弧を含む `rem` が `( )` ブロック内にあると壊れる)。
+
+### 日本語版 MSVC のヘッダ依存 (重要)
+
+**日本語版 (英語以外) の MSVC で Ninja ビルドするときは、構成もビルドも
+UTF-8 のコンソール (`chcp 65001`) で行う。** そうしないと Ninja がヘッダの
+依存をほとんど記録できず、**ヘッダを変えても、それを含む `.cpp` が再コンパイル
+されない**。クラスのメンバを変えた場合は古い `.obj` が混ざり、リンクエラー
+(未解決シンボル) やクラスサイズの食い違いによるメモリ破壊の原因になる。
+`tools\update-and-build.ps1` は自動でこうするので、手で構成するときだけ気にすればよい。
+英語版 MSVC (CI) は影響を受けない。
+
+仕組み (2026-10-19 に MSVC 14.36 / CMake 3.26 / Ninja 1.11 で実測):
+
+1. cl は `/showIncludes` の行頭を、日本語版では「メモ: インクルード ファイル:」と
+   **起動時のコンソールの出力コードページで**書く。
+2. CMake はこの接頭辞を**構成時のコードページで** `build\CMakeFiles\rules.ninja`
+   の `msvc_deps_prefix` に書き、Ninja はこれをバイト列のまま照合する。
+3. ところが**リンク工程はリンク中だけコンソールを UTF-8 (65001) に切り替える**
+   (並列ビルド中にコードページを繰り返し読むと、リンク中だけ 65001 になり、終わると戻る)。
+4. CP932 で構成・ビルドすると、リンクと重なって起動した cl は UTF-8 で行頭を書くので
+   照合に失敗し、その `.obj` の依存が 1 件も記録されない。並列ビルドではリンクが
+   ほぼ常にどこかで走っているので、最初のリンク以降のほぼすべてが該当する。
+
+| 構成 / ビルド時のコードページ | 依存が記録された `.obj` | `TabHelpers.h` を変えたときの再ビルド対象 |
+|---|---|---|
+| CP932 / CP932 (従来) | 42 / 360 | **2** (moc の生成物だけ) |
+| UTF-8 / UTF-8 | 355 / 360 (残り 5 個はプロジェクトのヘッダを含まない) | **53** (このヘッダを含む全ファイル) |
+
+手で構成するときの手順:
+
+```bat
+chcp 65001
+cmake -B build -G Ninja ...
+cmake --build build --clean-first
+```
+
+(最後の `--clean-first` は、CP932 で作った build を一度だけ作り直すため。)
+
+構成をやり直すと `rules.ninja` は UTF-8 になるが、既にある `.obj` は依存が記録
+されていないままなので、**一度は `--clean-first` で作り直す**必要がある。
+`update-and-build.ps1` は `rules.ninja` の接頭辞を見て古い構成を検出し、その build
+だけ自動で作り直す (2 回目以降は差分ビルド)。CMake も、非英語版 MSVC を UTF-8 でない
+コンソールで Ninja 構成したときに警告を出す。
+
+依存が記録されているかは `ninja -C build -t deps` の `#deps` の件数で確かめられる
+(`#deps 0` が大量に並ぶなら記録されていない)。
+
+根本的には MSVC の英語言語パックを入れて `VSLANG=1033` にすれば、行頭が ASCII の
+"Note: including file:" になりコードページに左右されない。ただし Visual Studio
+Installer での変更が要る (この PC の Build Tools は日本語リソースのみで、`VSLANG=1033`
+は効かなかった)。
 
 ## 2. カーネルのビルド
 
