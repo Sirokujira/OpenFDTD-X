@@ -494,6 +494,15 @@ struct AcousticOpts {
     // 既定のままならキー自体を書かない (旧ファイルとバイト一致 — 絶対規則 2)。
     bool    angleDependentAbsorption = false;
 
+    // ── 帯域内の周波数依存インピーダンス (.ofdx
+    //    "acoustic.frequency_dependent_impedance" — 追加キー。ADR-0015) ──
+    // true で FDTD ソルバーが境界を受動 1 次素子 (抵抗 + 質量 / 剛性) にし、
+    // 有効帯域内の最低・最高バンドの中心で |R| = √(1−α_b) に合わせる
+    // (false = 従来どおり帯域内平均の 1 値)。幾何音響はもともとバンド別なので
+    // 読まない。既定のままならキー自体を書かない (旧ファイルとバイト一致 —
+    // 絶対規則 2)。
+    bool    frequencyDependentImpedance = false;
+
     // ── 障害物の材質 (.ofdx "acoustic.obstacles" — 追加キー。ADR-0012) ──
     // .ofd の geometry 行 (= geometries() の並び) ごとの吸音率。外部音響
     // ソルバー 2 本が同じキーを読み、FDTD は障害物と空気の界面を外壁と

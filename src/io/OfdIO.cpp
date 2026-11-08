@@ -806,6 +806,12 @@ QByteArray OfdxIO::serialize(const Project &p)
         // FDTD / 幾何音響の両ソルバーが読むため (片方だけ切り替わると
         // ハイブリッドのクロスオーバーで壁が食い違う)。
         if (a.angleDependentAbsorption) ac["angle_dependent_absorption"] = true;
+        // 帯域内の周波数依存インピーダンス (ADR-0015) — 既定 (false) なら
+        // キー自体を書かない (旧ファイルとバイト一致。絶対規則 2)。FDTD だけが
+        // 読むが、.ofdx を両ソルバーで共有するため acoustic 直下に置く
+        // (FDTD は acoustic.ga を丸ごと読み飛ばす規約)。
+        if (a.frequencyDependentImpedance)
+            ac["frequency_dependent_impedance"] = true;
         {   // 幾何音響ソルバーの設定 (ADR-0013) — 明示されたキーだけ書き、
             // 1 つも無ければ "ga" 自体を書かない (旧ファイルとバイト一致。
             // 絶対規則 2)。ここで扱わない子キー (obstacles、scattering 配列
@@ -1575,6 +1581,11 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
         // 角度依存吸音 (ADR-0011) — 追加キー。欠落時は false (旧ファイル互換)
         a.angleDependentAbsorption = ac.value("angle_dependent_absorption")
                                          .toBool(a.angleDependentAbsorption);
+        // 帯域内の周波数依存インピーダンス (ADR-0015) — 追加キー。欠落時は
+        // false (旧ファイル互換 = 帯域内平均の 1 値)
+        a.frequencyDependentImpedance =
+            ac.value("frequency_dependent_impedance")
+                .toBool(a.frequencyDependentImpedance);
         // 幾何音響ソルバーの設定 (ADR-0013) — 欠落キーは未設定 (ソルバー既定)。
         // scattering がバンド別の配列なら GUI では編集せず、未知キー保持で
         // そのまま書き戻す (scatteringIsArray)。

@@ -4095,6 +4095,56 @@ static void testAudioEditEngine()
                   "angdep-ofdx: missing key falls back to false (normal incidence)");
         }
 
+        // ── 帯域内の周波数依存インピーダンス (.ofdx
+        //    acoustic.frequency_dependent_impedance — ADR-0015) ──
+        // 追加キー: 既定 (false) ならキーを書かず、戻せばバイト一致。FDTD は
+        // acoustic.ga を読み飛ばすので acoustic 直下に出ること、角度依存吸音の
+        // フラグと独立に往復することも確かめる。
+        {
+            ofd::Project fp;
+            QString e7;
+            const QString p7 = dir.filePath("fdimp.ofd");
+            const QString sc7 = dir.filePath("fdimp.ofdx");
+            auto bytes7 = [&] {
+                QFile f(sc7);
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            check(fp.save(p7, &e7), "fdimp-ofdx: default saved");
+            const QByteArray base7 = bytes7();
+            check(!base7.contains("frequency_dependent_impedance"),
+                  "fdimp-ofdx: defaults write no frequency_dependent_impedance key");
+
+            fp.acoustic().frequencyDependentImpedance = true;
+            check(fp.save(p7, &e7), "fdimp-ofdx: enabled saved");
+            check(bytes7().contains("\"frequency_dependent_impedance\": true"),
+                  "fdimp-ofdx: enabling writes frequency_dependent_impedance: true");
+            {
+                QFile f(sc7);
+                const QJsonObject ac = f.open(QIODevice::ReadOnly)
+                    ? QJsonDocument::fromJson(f.readAll()).object()
+                          .value("acoustic").toObject()
+                    : QJsonObject();
+                check(ac.value("frequency_dependent_impedance").toBool(false),
+                      "fdimp-ofdx: key sits directly under acoustic (not in acoustic.ga)");
+            }
+
+            ofd::Project rd7;
+            check(rd7.load(p7, &e7), "fdimp-ofdx: reloaded");
+            check(rd7.acoustic().frequencyDependentImpedance,
+                  "fdimp-ofdx: round-trips the frequency-dependent flag");
+            check(!rd7.acoustic().angleDependentAbsorption,
+                  "fdimp-ofdx: independent of the angle-dependent flag");
+
+            rd7.acoustic().frequencyDependentImpedance = false;
+            check(rd7.save(p7, &e7), "fdimp-ofdx: reverted saved");
+            check(bytes7() == base7,
+                  "fdimp-ofdx: reverting restores byte-identical output");
+
+            ofd::Project o7;
+            check(!o7.acoustic().frequencyDependentImpedance,
+                  "fdimp-ofdx: missing key falls back to false (in-band mean)");
+        }
+
         // ── 障害物の材質 (.ofdx acoustic.obstacles — ADR-0012) ──
         // 追加キー: 行が無ければキーを書かず、戻せばバイト一致。acoustic 直下に
         // 出ること、各行の他のキー (幾何音響の scattering 等) が往復で落ちない

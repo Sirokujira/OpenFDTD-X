@@ -247,6 +247,32 @@ const bool s_i18n = [] {
         "double-counts absorption at oblique angles). alpha above 0.951 is "
         "clamped to the locally reacting limit with a warning in solver.log "
         "(ADR-0011).");
+    I18n::reg("acs_fdimp",
+        "周波数依存インピーダンス: FDTD の境界を帯域内でバンド別に "
+        "(frequency_dependent_impedance)",
+        "Frequency-dependent impedance: per-band FDTD boundaries within the "
+        "valid band (frequency_dependent_impedance)");
+    I18n::reg("acs_fdimp_note",
+        "オフ (既定) は FDTD が有効帯域内のバンドの α を平均した 1 値で境界を作る"
+        "(従来動作)。オンで .ofdx に acoustic.frequency_dependent_impedance を"
+        "書き、FDTD が境界を抵抗 + 質量 (高域ほど α が小さい) または抵抗 + 剛性"
+        "(高域ほど α が大きい) の受動素子にして、帯域内の最低・最高バンドの中心で"
+        "|R| = √(1−α) に合わせる (中間バンドは近似)。1 オクターブで α が急に"
+        "変わる表 (例: 0.3 → 0.9) や角度依存吸音との併用は solver.log に warning を"
+        "出して従来の境界に戻る。帯域内が 1 バンドだけの粗い格子 (dx > 0.19 m) では"
+        "効かない。幾何音響はもともとバンド別なので影響しない (ADR-0015)。",
+        "Off (default): the FDTD solver builds each boundary from the mean "
+        "alpha of the in-band octaves (previous behaviour). On: writes "
+        "acoustic.frequency_dependent_impedance to the .ofdx and the FDTD "
+        "solver makes each boundary a passive resistance + mass (alpha "
+        "falling with frequency) or resistance + stiffness (alpha rising), "
+        "matching |R| = sqrt(1-alpha) at the lowest and highest in-band octave "
+        "centres (bands in between are approximate). Tables that change too "
+        "fast for one element (e.g. 0.3 -> 0.9 within an octave and a half) "
+        "and the combination with angle-dependent absorption fall back to the "
+        "previous boundary with a warning in solver.log. It has no effect on "
+        "coarse grids with only one in-band octave (dx > 0.19 m). The "
+        "geometric solver is already per-band and is unaffected (ADR-0015).");
     I18n::reg("acs_feeds", "feed ごとのゲイン・遅延・指向性",
               "Per-feed gain, delay and directivity");
     I18n::reg("acs_feeds_note",
@@ -623,6 +649,13 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
     m_angleDep->setToolTip(I18n::tr("acs_angledep_note"));
     ev->addWidget(m_angleDep);
 
+    // 帯域内の周波数依存インピーダンス (ADR-0015) — .ofdx
+    // acoustic.frequency_dependent_impedance。FDTD だけが読むが、同じ
+    // サイドカーに入るので外部ソルバー枠に並べる
+    m_fdImp = new QCheckBox(I18n::tr("acs_fdimp"), m_extGroup);
+    m_fdImp->setToolTip(I18n::tr("acs_fdimp_note"));
+    ev->addWidget(m_fdImp);
+
     // feed ごとのゲイン・遅延 (ADR-0010 Decision 7) — .ofdx acoustic.feeds。
     // 行は .ofd の feed 行と 1 対 1 で、行数は refresh が合わせる。
     // 複数音源がオフでも 1 行目は feed #1 に効くので、トグルとは独立に出す。
@@ -897,6 +930,8 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
             [this](bool) { apply(); });
     connect(m_angleDep, &QCheckBox::toggled, this,
             [this](bool) { apply(); });
+    connect(m_fdImp, &QCheckBox::toggled, this,
+            [this](bool) { apply(); });
     connect(btnBrowse, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(
             this, I18n::tr("acs_binary"));
@@ -992,6 +1027,9 @@ void AcousticSolverTab::apply()
     m_p->acoustic().multiSource = m_multiSource->isChecked();
     // 角度依存吸音は .ofdx acoustic.angle_dependent_absorption — ADR-0011
     m_p->acoustic().angleDependentAbsorption = m_angleDep->isChecked();
+    // 帯域内の周波数依存インピーダンスは .ofdx
+    // acoustic.frequency_dependent_impedance — ADR-0015
+    m_p->acoustic().frequencyDependentImpedance = m_fdImp->isChecked();
     // feed ごとのゲイン・遅延 (ADR-0010 Decision 7)。表に出ていない行
     // (feed 数を超える手書きの entry) は触らずに残す。
     {
@@ -1328,6 +1366,7 @@ void AcousticSolverTab::refresh()
     m_processes->setValue(s.solverProcesses);
     m_multiSource->setChecked(m_p->acoustic().multiSource);
     m_angleDep->setChecked(m_p->acoustic().angleDependentAbsorption);
+    m_fdImp->setChecked(m_p->acoustic().frequencyDependentImpedance);
     refreshFeedTable();
     refreshObsTable();
     {   // 幾何音響ソルバーの設定 (ADR-0013) — 未設定の項目はソルバー既定を表示
