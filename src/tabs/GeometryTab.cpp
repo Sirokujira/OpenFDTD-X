@@ -1072,6 +1072,8 @@ GeometryTab::GeometryTab(Project *project, QWidget *parent)
         auto &gs = m_p->geometries();
         if (r >= 0 && r < gs.size()) {
             gs.removeAt(r);
+            // 消えた障害物の材質を捨て、後ろの番号を詰める (ADR-0012)
+            m_p->acoustic().geometryRemoved(r);
             refresh();
             m_p->touch();
         }
@@ -1316,6 +1318,9 @@ void GeometryTab::insertUnitAfterCurrent(const Geometry &g)
     const int cur = currentUnit();
     const int at = cur < 0 ? m_p->geometries().size() : cur + 1;
     m_p->geometries().insert(at, g);
+    // 障害物の材質 (acoustic.obstacles) は 1 起点の番号で geometry を指す —
+    // 挿入で後ろの番号がずれるので追随させる (ADR-0012)
+    m_p->acoustic().geometryInserted(at);
     refresh();
     m_nav->setCurrent(at);
     m_table->selectRow(at);

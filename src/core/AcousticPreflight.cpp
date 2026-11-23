@@ -44,6 +44,20 @@ const bool s_i18n = [] {
         "分割数を減らす (刻みを粗くする) か、室を小さくしてください。",
         "The cell count %1 exceeds the solver limit %2. Reduce the divisions "
         "(coarser grid) in the Solver region tab, or shrink the room.");
+    I18n::reg("pfl_dir_aim",
+        "音源 #%1 は指向性 (%2) なのに向き (aim) がありません。"
+        "🔌 音響ソルバ連携タブの feed 表で「向き」に 0 でない [x, y, z] を"
+        "入れるか、指向性を「無指向」に戻してください。",
+        "Source #%1 is directional (%2) but has no aim. Enter a non-zero "
+        "[x, y, z] in the “Aim” column of the feed table in the Acoustic "
+        "Solver tab, or set the directivity back to omni.");
+    I18n::reg("pfl_dir_name",
+        "音源 #%1 の指向性 \"%2\" はソルバーが知らない名前です "
+        "(omni / subcardioid / cardioid / supercardioid / hypercardioid / "
+        "figure8)。🔌 音響ソルバ連携タブの feed 表で選び直してください。",
+        "The directivity \"%2\" of source #%1 is not a name the solvers know "
+        "(omni / subcardioid / cardioid / supercardioid / hypercardioid / "
+        "figure8). Pick one in the feed table of the Acoustic Solver tab.");
     return true;
 }();
 
@@ -100,6 +114,30 @@ QStringList acousticRunProblems(const Project &p)
         out << rangeArgs(I18n::tr("pfl_point_out")
                              .arg(QString::number(i + 1), num(r.x), num(r.y),
                                   num(r.z)));
+    }
+
+    // 7) 指向性 (ADR-0014) : 無指向でない音源に向きが無い / 未知の名前。
+    //    ソルバーは発火しない feed (multi_source オフの #2 以降) の指定も
+    //    検査するので、feed 行のある全行を見る。
+    {
+        const auto &fd = p.acoustic().feedDrives;
+        const int n = qMin(fd.size(), p.feeds().size());
+        for (int i = 0; i < n; ++i) {
+            const AcousticOpts::FeedDrive &d = fd.at(i);
+            if (d.directivity.isString()
+                && !AcousticOpts::FeedDrive::isKnownDirectivityName(
+                       d.directivity.toString())) {
+                out << I18n::tr("pfl_dir_name")
+                           .arg(QString::number(i + 1), d.directivity.toString());
+                continue;
+            }
+            if (d.isDirectional() && d.aimIsZero()) {
+                const QString what = d.directivity.isString()
+                    ? d.directivity.toString()
+                    : QStringLiteral("a < 1");
+                out << I18n::tr("pfl_dir_aim").arg(QString::number(i + 1), what);
+            }
+        }
     }
 
     // 6) セル総数

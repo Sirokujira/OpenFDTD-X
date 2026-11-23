@@ -32,6 +32,8 @@ namespace preflight {
 //   4. 音源が室外にある (座標と室の範囲を併記)
 //   5. 受音点が室外にある
 //   6. セル総数が 3,000 万を超える (OpenAcoustics の上限)
+//   7. 指向性つきの音源に向き (aim) が無い / 指向性の名前が未知
+//      (.ofdx acoustic.feeds — ADR-0014)
 QStringList acousticRunProblems(const Project &p);
 
 // セル総数の上限 (OpenAcoustics の ac_setup / ga_setup と同じ値)
