@@ -828,6 +828,7 @@ QByteArray OfdxIO::serialize(const Project &p)
             if (g.hasPress) go["pressure_kpa"] = g.pressureKpa;
             if (g.hasRadius) go["receiver_radius_m"] = g.receiverRadiusM;
             if (g.hasDuration) go["duration_s"] = g.durationS;
+            if (g.hasDiffraction) go["diffraction"] = g.diffraction;
             if (!go.isEmpty()) ac["ga"] = go;
         }
         // 障害物の材質 (ADR-0012) — 行が無ければキー自体を書かない
@@ -1621,6 +1622,10 @@ bool OfdxIO::load(const QString &path, Project &p, QString *err)
             }
             if (go.contains("duration_s")) {
                 g.hasDuration = true; g.durationS = go["duration_s"].toDouble(g.durationS);
+            }
+            if (go.contains("diffraction")) {
+                g.hasDiffraction = true;
+                g.diffraction = go["diffraction"].toBool(g.diffraction);
             }
         }
         // 障害物の材質 (ADR-0012) — 追加キー。欠落時は空 (全障害物が剛体)。

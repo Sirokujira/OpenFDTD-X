@@ -369,6 +369,23 @@ const bool s_i18n = [] {
         ".ofdx にバンド別の配列が書かれている — ここでは編集しない (保存しても残る)",
         "The .ofdx holds a per-band array — not editable here (kept on save)");
     I18n::reg("acs_ga_air", "空気吸収 (ISO 9613-1)", "Air absorption (ISO 9613-1)");
+    I18n::reg("acs_ga_diffr", "障害物の稜線の回折 (1 次)",
+              "Edge diffraction at obstacles (first order)");
+    I18n::reg("acs_ga_diffr_note",
+        "オンで .ofdx に acoustic.ga.diffraction を書き、幾何音響ソルバーが"
+        "障害物の稜線 (直方体・三角柱・角錐台) からの 1 次回折を Biot–Tolstoy–"
+        "Medwin の厳密解 (剛な楔) で足す。影の側に回り込む音が出て、影の境界で"
+        "音が途切れなくなる。2 次以上の回折・反射を含む回折・曲面の縁は扱わない。"
+        "オフ (既定) は従来どおり回折なし (キーも書かない)。FDTD は波動方程式を"
+        "解くので回折はもともと含む。",
+        "On: writes acoustic.ga.diffraction to the .ofdx and the geometric "
+        "solver adds first-order diffraction from obstacle edges (boxes, prisms, "
+        "frustums) with the Biot-Tolstoy-Medwin solution for rigid wedges, so "
+        "sound reaches into the shadow and does not cut off at the shadow "
+        "boundary. Higher-order diffraction, diffraction combined with "
+        "reflections and the rims of curved obstacles are not included. Off "
+        "(default): no diffraction, as before (no key written). The FDTD "
+        "solver already includes diffraction, as it solves the wave equation.");
     I18n::reg("acs_ga_temp", "温度 [°C]", "Temperature [°C]");
     I18n::reg("acs_ga_humid", "相対湿度 [%]", "Relative humidity [%]");
     I18n::reg("acs_ga_press", "気圧 [kPa]", "Pressure [kPa]");
@@ -720,6 +737,9 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
         gf->addRow(I18n::tr("acs_ga_scatter"), m_gaScatter);
         m_gaAir = new QCheckBox(I18n::tr("acs_ga_air"), m_extGroup);
         gf->addRow(QString(), m_gaAir);
+        m_gaDiffr = new QCheckBox(I18n::tr("acs_ga_diffr"), m_extGroup);
+        m_gaDiffr->setToolTip(I18n::tr("acs_ga_diffr_note"));
+        gf->addRow(QString(), m_gaDiffr);
         auto dspin = [this](double lo, double hi, int dec, double step) {
             auto *sp = new QDoubleSpinBox(m_extGroup);
             sp->setRange(lo, hi);
@@ -752,7 +772,7 @@ AcousticSolverTab::AcousticSolverTab(Project *project, QWidget *parent)
                                     m_gaRadius, m_gaDur })
             connect(sp, &QDoubleSpinBox::valueChanged, this,
                     [this](double) { apply(); });
-        for (QCheckBox *cb : { m_gaAir, m_gaRadiusAuto, m_gaDurAuto })
+        for (QCheckBox *cb : { m_gaAir, m_gaDiffr, m_gaRadiusAuto, m_gaDurAuto })
             connect(cb, &QCheckBox::toggled, this, [this](bool) { apply(); });
     }
 
@@ -1143,6 +1163,10 @@ void AcousticSolverTab::apply()
             g.airAbsorption = m_gaAir->isChecked();
             g.hasAir = g.airAbsorption != d.airAbsorption;
         }
+        if (m_gaDiffr->isChecked() != g.diffraction) {
+            g.diffraction = m_gaDiffr->isChecked();
+            g.hasDiffraction = g.diffraction != d.diffraction;
+        }
         if (moved(m_gaTemp->value(), g.temperatureC, m_gaTemp->decimals())) {
             g.temperatureC = m_gaTemp->value();
             g.hasTemp = g.temperatureC != d.temperatureC;
@@ -1378,6 +1402,7 @@ void AcousticSolverTab::refresh()
         m_gaScatter->setToolTip(g.scatteringIsArray ? I18n::tr("acs_ga_scatter_array")
                                                     : QString());
         m_gaAir->setChecked(g.airAbsorption);
+        m_gaDiffr->setChecked(g.diffraction);
         m_gaTemp->setValue(g.temperatureC);
         m_gaHumid->setValue(g.humidityPct);
         m_gaPress->setValue(g.pressureKpa);

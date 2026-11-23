@@ -4340,6 +4340,23 @@ static void testAudioEditEngine()
             check(!o8.acoustic().ga.hasImageOrder && !o8.acoustic().ga.hasRadius
                   && !o8.acoustic().ga.hasDuration,
                   "ga-ofdx: missing key falls back to solver defaults (auto)");
+
+            // 1 次エッジ回折 (acoustic.ga.diffraction) : 明示したときだけ書き、
+            // 往復で保たれ、戻すとバイト一致。既定は回折なし。
+            check(!o8.acoustic().ga.hasDiffraction && !o8.acoustic().ga.diffraction,
+                  "ga-ofdx: diffraction defaults to off (no key)");
+            rd8.acoustic().ga.hasDiffraction = true;
+            rd8.acoustic().ga.diffraction = true;
+            check(rd8.save(p8, &e8), "ga-ofdx: diffraction saved");
+            check(ga8().value("diffraction").toBool(false) && ga8().size() == 1,
+                  "ga-ofdx: diffraction is written under acoustic.ga only when set");
+            ofd::Project df8;
+            check(df8.load(p8, &e8) && df8.acoustic().ga.hasDiffraction
+                  && df8.acoustic().ga.diffraction,
+                  "ga-ofdx: diffraction round-trips");
+            df8.acoustic().ga = ofd::AcousticOpts::GaParams{};
+            check(df8.save(p8, &e8) && bytes8() == base8,
+                  "ga-ofdx: clearing diffraction restores byte-identical output");
         }
 
         // ── feed ごとのゲイン・遅延 (.ofdx acoustic.feeds —

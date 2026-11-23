@@ -103,6 +103,7 @@ private:
     QSpinBox       *m_gaOrder = nullptr, *m_gaRays = nullptr;
     QDoubleSpinBox *m_gaScatter = nullptr;
     QCheckBox      *m_gaAir = nullptr;
+    QCheckBox      *m_gaDiffr = nullptr;     // 1 次エッジ回折 (acoustic.ga.diffraction)
     QDoubleSpinBox *m_gaTemp = nullptr, *m_gaHumid = nullptr, *m_gaPress = nullptr;
     QCheckBox      *m_gaRadiusAuto = nullptr, *m_gaDurAuto = nullptr;
     QDoubleSpinBox *m_gaRadius = nullptr, *m_gaDur = nullptr;

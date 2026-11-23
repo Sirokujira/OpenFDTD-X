@@ -539,6 +539,9 @@ struct AcousticOpts {
         bool   hasPress = false;       double pressureKpa = 101.325; // 50..120
         bool   hasRadius = false;      double receiverRadiusM = 0.5; // 0 < r <= 10 (未設定 = 自動)
         bool   hasDuration = false;    double durationS = 2.0;       // 0 < T <= 10 (未設定 = 自動)
+        // 1 次エッジ回折 (acoustic.ga.diffraction — 障害物の稜線の BTM 回折。
+        // 既定 false = 回折なし。OpenAcoustics の検証 (O))
+        bool   hasDiffraction = false; bool   diffraction = false;
     };
     GaParams ga;
 
